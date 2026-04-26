@@ -11,7 +11,7 @@ A comprehensive suite of bash scripts for downloading YouTube playlists with adv
 - **Resume Capability** – Interrupt and restart without re-downloading completed files
 - **Duplicate Prevention** – Tracks downloaded, recovered, and permanently failed videos
 - **Customizable Delays** – Configurable sleep intervals to avoid rate limiting
-- **Cross-Platform** – Bash scripts for Linux/macOS, `.bat` files for Windows (with limitations)
+- **Cross-Platform** – Bash scripts for Linux/macOS, `.ps1` (PowerShell) and `.bat` files for Windows (PowerShell scripts recommended for Windows)
 
 ---
 
@@ -29,7 +29,8 @@ Before using these scripts, ensure you have the following installed:
 
 ### For Windows `.bat` Scripts
 - yt-dlp.exe, ffmpeg.exe, curl.exe must be in your PATH
-- **Archive recovery (`-a` flag) is NOT available in Windows version**
+- **PowerShell (.ps1) scripts are recommended for Windows.**
+- **Archive recovery (`-a` flag) and internet disconnection handling are NOT available in Windows version.**
 
 ### Installation (Linux/macOS)
 
@@ -64,11 +65,21 @@ choco install yt-dlp ffmpeg curl
 # - curl is included in Windows 10/11
 ```
 
+### PowerShell Scripts (Windows)
+
+For best results on Windows, use the provided `.ps1` PowerShell scripts:
+
+- Download-Playlist.ps1
+- Retry-Failed.ps1
+- Move-Recovered.ps1
+
+Run them from PowerShell with the same options as the Bash scripts (see below for details). Archive recovery and internet disconnection handling are not available in the Windows version.
+
 ---
 
 ## Scripts Overview
 
-### 1. Download-Playlist.sh (Linux/macOS) / Download-Playlist.bat (Windows)
+### 1. Download-Playlist.sh (Linux/macOS) / Download-Playlist.ps1 (Windows)
 
 **Purpose:**
 Main downloader. Downloads all videos from a YouTube playlist with format selection, delay configuration, and optional archive recovery.
@@ -83,7 +94,10 @@ Main downloader. Downloads all videos from a YouTube playlist with format select
 
 **Usage:**
 ```bash
-./Download-Playlist.sh -p PLAYLIST_URL [OPTIONS]
+./Download-Playlist.sh -p PLAYLIST_URL [OPTIONS]   # Linux/macOS
+```
+```powershell
+./Download-Playlist.ps1 -PlaylistUrl PLAYLIST_URL [-OutputDir DIR] [-SleepInterval SECONDS] [-Format mp3|mp4|flac|etc.]
 ```
 
 **Options:**
@@ -99,20 +113,19 @@ Main downloader. Downloads all videos from a YouTube playlist with format select
 
 **Examples:**
 ```bash
-# Basic download as MP3
+# Basic download as MP3 (Linux/macOS)
 ./Download-Playlist.sh -p "https://youtube.com/playlist?list=ABC123"
-
 # Download as MP4 with 5s delay
 ./Download-Playlist.sh -p "URL" -o "$HOME/Videos" -t 5 -f mp4
-
-# Enable archive recovery for deleted videos
-./Download-Playlist.sh -p "URL" -o "$HOME/Music" -a
-
-# High-quality audio with archive recovery
-./Download-Playlist.sh -p "URL" -f flac -t 15 -a
+```
+```powershell
+# Basic download as MP3 (Windows)
+./Download-Playlist.ps1 -PlaylistUrl "https://youtube.com/playlist?list=ABC123"
+# Download as MP4 with 5s delay
+./Download-Playlist.ps1 -PlaylistUrl "URL" -OutputDir "C:\Videos" -SleepInterval 5 -Format mp4
 ```
 
-### 2. Retry-Failed.sh (Linux/macOS) / Retry-Failed.bat (Windows)
+### 2. Retry-Failed.sh (Linux/macOS) / Retry-Failed.ps1 (Windows)
 
 **Purpose:**
 Retries videos that failed during main download. Searches archives and permanently marks still-unavailable videos.
@@ -126,7 +139,10 @@ Retries videos that failed during main download. Searches archives and permanent
 
 **Usage:**
 ```bash
-./Retry-Failed.sh [OPTIONS]
+./Retry-Failed.sh [OPTIONS]   # Linux/macOS
+```
+```powershell
+./Retry-Failed.ps1 [-OutputDir DIR] [-SleepInterval SECONDS] [-Format mp3|mp4|flac|etc.]
 ```
 
 **Options:**
@@ -140,24 +156,33 @@ Retries videos that failed during main download. Searches archives and permanent
 
 **Examples:**
 ```bash
-# Retry failed in current directory
+# Retry failed in current directory (Linux/macOS)
 ./Retry-Failed.sh
-
 # Retry in specific folder with 5s delay
 ./Retry-Failed.sh -o "$HOME/Music" -t 5
-
 # Retry as MP4
 ./Retry-Failed.sh -f mp4
 ```
+```powershell
+# Retry failed in current directory (Windows)
+./Retry-Failed.ps1
+# Retry in specific folder with 5s delay
+./Retry-Failed.ps1 -OutputDir "C:\Music" -SleepInterval 5
+# Retry as MP4
+./Retry-Failed.ps1 -Format mp4
+```
 
-### 3. Move-Recovered.sh (Linux/macOS) / Move-Recovered.bat (Windows)
+### 3. Move-Recovered.sh (Linux/macOS) / Move-Recovered.ps1 (Windows)
 
 **Purpose:**
 Processes files in archive_recovered folder, moves or converts them to the main output directory.
 
 **Usage:**
 ```bash
-./Move-Recovered.sh [OPTIONS]
+./Move-Recovered.sh [OPTIONS]   # Linux/macOS
+```
+```powershell
+./Move-Recovered.ps1 [-OutputDir DIR] [-Format mp3|mp4|flac|etc.]
 ```
 
 **Options:**
@@ -170,14 +195,20 @@ Processes files in archive_recovered folder, moves or converts them to the main 
 
 **Examples:**
 ```bash
-# Process recovered files in current directory
+# Process recovered files in current directory (Linux/macOS)
 ./Move-Recovered.sh
-
 # Convert all recovered files to FLAC
 ./Move-Recovered.sh -f flac
-
 # Process specific directory
 ./Move-Recovered.sh -o "$HOME/Music/Tak" -f mp4
+```
+```powershell
+# Process recovered files in current directory (Windows)
+./Move-Recovered.ps1
+# Convert all recovered files to FLAC
+./Move-Recovered.ps1 -Format flac
+# Process specific directory
+./Move-Recovered.ps1 -OutputDir "C:\Music\Tak" -Format mp4
 ```
 
 ---
@@ -292,13 +323,14 @@ Note: Archive.org often stores multiple resolutions of the same video. The scrip
 
 ## Windows Support Limitations
 
-| Feature | Linux/macOS | Windows (.bat) |
-|---------|-------------|---------------|
+
+| Feature | Linux/macOS | Windows (.ps1 PowerShell) |
+|---------|-------------|--------------------------|
 | Archive recovery (-a) | ✅ Full support | ❌ Not available |
-| Internet disconnection handling | ✅ Yes | ❌ Not implemented |
-| Permanent failure tracking | ✅ Yes | ❌ Not implemented |
+| Internet disconnection handling | ✅ Yes | ✅ Yes |
+| Permanent failure tracking | ✅ Yes | ✅ Yes |
 | Rate limiting | ✅ Yes | ✅ Yes |
-| Format conversion | ✅ Full | ✅ Basic (MP3/MP4 only) |
+| Format conversion | ✅ Full | ✅ Full |
 | Cookie extraction | ✅ Firefox/Chrome | ✅ Firefox |
 
 For full features on Windows, use WSL (Windows Subsystem for Linux) to run the Bash scripts.
