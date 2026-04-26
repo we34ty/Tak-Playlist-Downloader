@@ -30,7 +30,7 @@ Before using these scripts, ensure you have the following installed:
 ### For Windows `.bat` Scripts
 - yt-dlp.exe, ffmpeg.exe, curl.exe must be in your PATH
 - **PowerShell (.ps1) scripts are recommended for Windows.**
-- **Archive recovery (`-a` flag) and internet disconnection handling are NOT available in Windows version.**
+- **Archive recovery (`-a` flag) is NOT available in Windows version.**
 
 ### Installation (Linux/macOS)
 
@@ -73,7 +73,7 @@ For best results on Windows, use the provided `.ps1` PowerShell scripts:
 - Retry-Failed.ps1
 - Move-Recovered.ps1
 
-Run them from PowerShell with the same options as the Bash scripts (see below for details). Archive recovery and internet disconnection handling are not available in the Windows version.
+Run them from PowerShell with the same options as the Bash scripts (see below for details). Archive recovery is not available in the Windows version.
 
 ---
 
