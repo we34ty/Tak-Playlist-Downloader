@@ -1,106 +1,239 @@
-$MaxWaitSeconds = 3600  # 1 hour
-$WaitInterval = 30
-
-function Test-Internet {
-    try {
-        $null = Invoke-WebRequest -Uri "https://www.google.com" -UseBasicParsing -TimeoutSec 3
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Wait-ForInternet {
-    $elapsed = 0
-    Write-Host "⚠️  No internet connection detected"
-    Write-Host "Waiting for connection to resume..."
-    while (-not (Test-Internet)) {
-        Start-Sleep -Seconds $WaitInterval
-        $elapsed += $WaitInterval
-        if ($elapsed -ge $MaxWaitSeconds) {
-            Write-Host "No internet connection after 1 hour. Exiting."
-            exit 1
-        }
-        Write-Host "  Still waiting... ($elapsed s elapsed)"
-    }
-    Write-Host "✓ Internet connection restored! Resuming downloads."
-    Start-Sleep -Seconds 5
-}
-# Tak Retry Failed Downloads (PowerShell)
-# Windows version: Archive recovery is NOT supported
-
+#!/usr/bin/env pwsh
+# ========== DEFAULT CONFIGURATION ==========
 param(
-    [string]$OutputDir = (Get-Location).Path,
-    [int]$SleepInterval = 11,
-    [string]$Format = "mp3"
+    [string]$o = (Get-Location).Path,  # Output directory
+    [int]$t = 11,                       # Sleep interval
+    [string]$f = "mp3",                 # Format
+    [string]$q = "mid",                 # Quality
+    [switch]$h                          # Help
 )
+# ===========================================
 
-function Show-Help {
-    Write-Host "Usage: .\Retry-Failed.ps1 [-OutputDir <DIR>] [-SleepInterval <SECONDS>] [-Format <mp3|mp4|flac|etc>]"
-    Write-Host "\nOptions:"
-    Write-Host "  -OutputDir     Output directory (default: current directory)"
-    Write-Host "  -SleepInterval Sleep between retries (default: 11)"
-    Write-Host "  -Format        Output format (mp3, mp4, flac, etc.) (default: mp3)"
-    Write-Host "\nNote: Archive recovery is NOT available in Windows version."
-}
+# Colors
+$RED = "`e[31m"
+$GREEN = "`e[32m"
+$YELLOW = "`e[33m"
+$BLUE = "`e[34m"
+$CYAN = "`e[36m"
+$MAGENTA = "`e[35m"
+$NC = "`e[0m"
 
-$FailedLog = Join-Path $OutputDir 'failed_ids.txt'
-$LogFile = Join-Path $OutputDir 'downloaded_ids.txt'
-$RecoveredLog = Join-Path $OutputDir 'recovered_ids.txt'
-$PermFailedLog = Join-Path $OutputDir 'permanently_failed_ids.txt'
-
-if (!(Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
-Set-Location $OutputDir
-
-
-# Check internet before starting
-if (-not (Test-Internet)) { Wait-ForInternet }
-
-if (!(Test-Path $FailedLog) -or !(Get-Content $FailedLog)) {
-    Write-Host "No failed_ids.txt found or it's empty. Nothing to retry."
-    exit 1
-}
-
-$FailedIds = Get-Content $FailedLog | Where-Object { $_.Trim() -ne "" }
-$Downloaded = @()
-if (Test-Path $LogFile) { $Downloaded = Get-Content $LogFile }
-$Recovered = @()
-if (Test-Path $RecoveredLog) { $Recovered = Get-Content $RecoveredLog }
-$PermFailed = @()
-if (Test-Path $PermFailedLog) { $PermFailed = Get-Content $PermFailedLog }
-
-$RetryList = $FailedIds | Where-Object { ($Downloaded -notcontains $_) -and ($Recovered -notcontains $_) -and ($PermFailed -notcontains $_) }
-$Total = $RetryList.Count
-if ($Total -eq 0) {
-    Write-Host "All failed videos have been recovered or marked permanently failed!"
+# Help function
+if ($h) {
+    Write-Host "Usage: .\Retry-Failed.ps1 [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-q QUALITY] [-h]"
+    Write-Host ""
+    Write-Host "Options:"
+    Write-Host "  -o DIR        Output directory (default: current directory)"
+    Write-Host "  -t SECONDS    Sleep interval between retries (default: 11)"
+    Write-Host "  -f FORMAT     Output format (default: mp3)"
+    Write-Host "  -q QUALITY    Quality: low, mid, high (default: mid)"
+    Write-Host "  -h            Show this help message"
+    Write-Host ""
+    Write-Host "Note: Archive recovery is not available in Windows version"
     exit 0
 }
 
-$Processed = 0
-foreach ($videoId in $RetryList) {
-    $Processed++
-    Write-Host "[$Processed/$Total] RETRYING: $videoId"
+# Validate quality
+if ($q -notin @("low", "mid", "high")) {
+    Write-Host "${RED}ERROR: Quality must be low, mid, or high${NC}"
+    exit 1
+}
 
-    # Check internet before each retry
-    if (-not (Test-Internet)) { Wait-ForInternet }
+# Validate sleep interval
+if ($t -notmatch '^\d+$') {
+    Write-Host "${RED}ERROR: Sleep interval must be a number${NC}"
+    exit 1
+}
 
-    $ytDlpArgs = if ($Format -in @('mp3','m4a','aac','flac','wav','opus')) {
-        "-f ba -x --audio-format $Format"
-    } else {
-        "-f bestvideo+bestaudio --merge-output-format $Format"
+# Validate format
+$FORMAT_LOWER = $f.ToLower()
+$AUDIO_FORMATS = @("mp3", "m4a", "aac", "flac", "wav", "opus")
+$VIDEO_FORMATS = @("mp4", "webm", "mkv", "avi", "mov")
+
+if ($AUDIO_FORMATS -contains $FORMAT_LOWER) {
+    $DOWNLOAD_TYPE = "audio"
+    $OUTPUT_TEMPLATE = "%(uploader)s - %(title)s.%(ext)s"
+    Write-Host "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
+    
+    switch ($q) {
+        "low" { $AUDIO_QUALITY = "5" }
+        "mid" { $AUDIO_QUALITY = "2" }
+        "high" { $AUDIO_QUALITY = "0" }
+        default { $AUDIO_QUALITY = "2" }
     }
-    $outputTemplate = '%(uploader)s - %(title)s.%(ext)s'
-    $cmd = "yt-dlp $ytDlpArgs --embed-thumbnail --add-metadata --output `"$outputTemplate`" --no-overwrites --continue --no-warnings https://youtube.com/watch?v=$videoId"
-    if (Invoke-Expression $cmd) {
-        Add-Content $LogFile $videoId
-        Write-Host "  ✓ Downloaded successfully"
-    } else {
-        Add-Content $PermFailedLog $videoId
-        Write-Host "  ✗ Still unavailable. Marked as permanently failed."
-    }
-    if ($SleepInterval -gt 0 -and $Processed -lt $Total) {
-        Start-Sleep -Seconds $SleepInterval
+    $YTDLP_ARGS = "-f bestaudio -x --audio-format $FORMAT_LOWER --audio-quality $AUDIO_QUALITY"
+}
+elseif ($VIDEO_FORMATS -contains $FORMAT_LOWER) {
+    $DOWNLOAD_TYPE = "video"
+    $OUTPUT_TEMPLATE = "%(uploader)s - %(title)s.%(ext)s"
+    Write-Host "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
+    
+    switch ($q) {
+        "low" { $YTDLP_ARGS = "-f worstvideo+worstaudio --merge-output-format $FORMAT_LOWER" }
+        "mid" { $YTDLP_ARGS = "-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format $FORMAT_LOWER" }
+        "high" { $YTDLP_ARGS = "-f bestvideo+bestaudio --merge-output-format $FORMAT_LOWER" }
+        default { $YTDLP_ARGS = "-f bestvideo+bestaudio --merge-output-format $FORMAT_LOWER" }
     }
 }
-Write-Host "\nRETRY COMPLETE! Files saved to: $OutputDir"
-Write-Host "Note: Archive recovery is not available in this version."
+else {
+    Write-Host "${RED}ERROR: Unsupported format '$FORMAT'${NC}"
+    exit 1
+}
+
+Write-Host "${BLUE}Quality: $q (forcing ${FORMAT_LOWER} conversion)${NC}"
+
+# Change to output directory
+if (-not (Test-Path $o)) {
+    Write-Host "${RED}ERROR: Output directory not found: $o${NC}"
+    exit 1
+}
+Set-Location $o
+
+# Set up hidden file paths
+$DOWNLOADED_LOG = ".downloaded_ids.txt"
+$FAILED_LOG = ".failed_ids.txt"
+$PERMANENTLY_FAILED_LOG = ".permanently_failed_ids.txt"
+$RECOVERED_LOG = ".recovered_ids.txt"
+$YTDLP_ARCHIVE = ".ytdlp_archive.txt"
+
+# Internet check function
+function Check-Internet {
+    try {
+        $null = ping -n 1 8.8.8.8 -W 2000 2>$null
+        if ($LASTEXITCODE -eq 0) { return $true }
+        $null = Invoke-WebRequest -Uri "https://www.google.com" -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
+        if ($?) { return $true }
+        return $false
+    }
+    catch { return $false }
+}
+
+function Wait-ForInternet {
+    $wait_time = 30
+    $elapsed = 0
+    
+    Write-Host "${YELLOW}⚠️  No internet connection detected${NC}"
+    Write-Host "${YELLOW}Waiting for connection to resume...${NC}"
+    
+    while (-not (Check-Internet)) {
+        Start-Sleep -Seconds $wait_time
+        $elapsed += $wait_time
+        Write-Host "${BLUE}  Still waiting... (${elapsed}s elapsed)${NC}"
+    }
+    
+    Write-Host "${GREEN}✓ Internet connection restored! Resuming.${NC}"
+    Start-Sleep -Seconds 5
+}
+
+# Functions
+function Mark-Downloaded {
+    param([string]$video_id)
+    Add-Content -Path $DOWNLOADED_LOG -Value $video_id
+    Add-Content -Path $YTDLP_ARCHIVE -Value "youtube $video_id"
+}
+
+function Mark-PermanentlyFailed {
+    param([string]$video_id)
+    Add-Content -Path $PERMANENTLY_FAILED_LOG -Value $video_id
+}
+
+function Remove-FromFailed {
+    param([string]$video_id)
+    $content = Get-Content $FAILED_LOG -ErrorAction SilentlyContinue | Where-Object { $_ -ne $video_id }
+    $content | Out-File -FilePath $FAILED_LOG -Force
+}
+
+# Main retry loop
+Write-Host "${GREEN}=========================================${NC}"
+Write-Host "${GREEN}Retry Failed Downloads (PowerShell)${NC}"
+Write-Host "${GREEN}=========================================${NC}"
+Write-Host "Output directory: $o"
+Write-Host "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
+Write-Host "Quality: $q"
+Write-Host "Delay between retries: ${t}s"
+Write-Host ""
+
+if (-not (Test-Path $FAILED_LOG) -or (Get-Content $FAILED_LOG -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) {
+    Write-Host "${YELLOW}No .failed_ids.txt found or it's empty. Nothing to retry.${NC}"
+    exit 1
+}
+
+if (-not (Check-Internet)) {
+    Wait-ForInternet
+}
+
+# Filter out already downloaded or permanently failed
+$failed_ids = Get-Content $FAILED_LOG | Where-Object { $_ -match '^[a-zA-Z0-9_-]+$' }
+$to_retry = @()
+
+foreach ($video_id in $failed_ids) {
+    if (Select-String -Path $PERMANENTLY_FAILED_LOG -Pattern "^$video_id$" -Quiet -ErrorAction SilentlyContinue) {
+        Write-Host "${CYAN}  Skipping permanently failed: $video_id${NC}"
+        Remove-FromFailed $video_id
+    }
+    elseif (Select-String -Path $DOWNLOADED_LOG -Pattern "^$video_id$" -Quiet -ErrorAction SilentlyContinue) {
+        Write-Host "${CYAN}  Skipping already downloaded: $video_id${NC}"
+        Remove-FromFailed $video_id
+    }
+    else {
+        $to_retry += $video_id
+    }
+}
+
+$TOTAL = $to_retry.Count
+
+if ($TOTAL -eq 0) {
+    Write-Host "${GREEN}All failed videos have been marked as permanently failed!${NC}"
+    exit 0
+}
+
+Write-Host "${CYAN}Videos to retry: $TOTAL${NC}"
+Write-Host ""
+
+$CURRENT = 0
+$SUCCESS = 0
+$STILL_FAILED = 0
+
+foreach ($video_id in $to_retry) {
+    $CURRENT++
+    Write-Host ""
+    Write-Host "${YELLOW}[$CURRENT/$TOTAL] RETRYING: $video_id${NC}"
+    
+    if (-not (Check-Internet)) {
+        Wait-ForInternet
+    }
+    
+    Write-Host "${BLUE}  → Trying YouTube...${NC}"
+    $download_cmd = "yt-dlp --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --download-archive `"$YTDLP_ARCHIVE`" $YTDLP_ARGS --embed-thumbnail --add-metadata --output `"$OUTPUT_TEMPLATE`" --no-overwrites --continue https://youtube.com/watch?v=$video_id 2>`$null"
+    Invoke-Expression $download_cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "${GREEN}  ✓ Downloaded successfully${NC}"
+        Mark-Downloaded $video_id
+        Remove-FromFailed $video_id
+        $SUCCESS++
+    }
+    else {
+        Write-Host "${RED}  ✗ Still unavailable on YouTube${NC}"
+        Write-Host "${YELLOW}  → Archive recovery not available in Windows version${NC}"
+        Write-Host "${YELLOW}  → Marked as permanently failed${NC}"
+        Mark-PermanentlyFailed $video_id
+        Remove-FromFailed $video_id
+        $STILL_FAILED++
+    }
+    
+    if ($CURRENT -lt $TOTAL) {
+        Write-Host "${BLUE}  Waiting ${t}s...${NC}"
+        Start-Sleep -Seconds $t
+    }
+}
+
+# Summary
+Write-Host ""
+Write-Host "${GREEN}=========================================${NC}"
+Write-Host "${GREEN}RETRY COMPLETE${NC}"
+Write-Host "${GREEN}=========================================${NC}"
+Write-Host "${GREEN}✓ Downloaded from YouTube: $SUCCESS${NC}"
+Write-Host "${RED}✗ Permanently failed: $STILL_FAILED${NC}"
+Write-Host ""
+Write-Host "Permanently failed videos saved to: $PERMANENTLY_FAILED_LOG"

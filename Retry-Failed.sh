@@ -4,6 +4,7 @@
 OUTPUT_DIR="$(pwd)"  # Default to current directory
 SLEEP_INTERVAL=11     # Default 11 seconds
 FORMAT="mp3"          # Default format
+QUALITY="mid"         # Default quality
 # ===========================================
 
 # Colors
@@ -12,6 +13,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 # Internet connection check
@@ -42,29 +44,61 @@ wait_for_internet() {
     sleep 5
 }
 
+# Set quality parameters
+set_quality_params() {
+    local quality="$1"
+    local format="$2"
+    local format_lower=$(echo "$format" | tr '[:upper:]' '[:lower:]')
+    local audio_formats="mp3 m4a aac flac wav opus"
+    local video_formats="mp4 webm mkv avi mov"
+    
+    if echo "$audio_formats" | grep -qw "$format_lower"; then
+        case "$quality" in
+            low) AUDIO_QUALITY="5" ;;
+            mid) AUDIO_QUALITY="2" ;;
+            high) AUDIO_QUALITY="0" ;;
+            *) AUDIO_QUALITY="2" ;;
+        esac
+        YTDLP_EXTRA_ARGS="-f bestaudio -x --audio-format ${format_lower} --audio-quality ${AUDIO_QUALITY}"
+    else
+        case "$quality" in
+            low) YTDLP_EXTRA_ARGS="-f worstvideo+worstaudio --merge-output-format ${format_lower}" ;;
+            mid) YTDLP_EXTRA_ARGS="-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format ${format_lower}" ;;
+            high) YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}" ;;
+            *) YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}" ;;
+        esac
+    fi
+}
+
 # Help function
 show_help() {
-    echo "Usage: $0 [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-h]"
+    echo "Usage: $0 [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-q QUALITY] [-h]"
     echo ""
     echo "Options:"
     echo "  -o DIR        Output directory (default: current directory)"
     echo "  -t SECONDS    Sleep interval between retries (default: 11)"
     echo "  -f FORMAT     Output format (default: mp3)"
+    echo "  -q QUALITY    Quality: low, mid, high (default: mid)"
     echo "  -h            Show this help message"
-    echo ""
-    echo "Note: Permanently failed videos will be skipped automatically"
 }
 
 # Parse arguments
-while getopts "o:t:f:h" opt; do
+while getopts "o:t:f:q:h" opt; do
     case $opt in
         o) OUTPUT_DIR="$OPTARG" ;;
         t) SLEEP_INTERVAL="$OPTARG" ;;
         f) FORMAT="$OPTARG" ;;
+        q) QUALITY="$OPTARG" ;;
         h) show_help; exit 0 ;;
         *) show_help; exit 1 ;;
     esac
 done
+
+# Validate quality
+if [[ ! "$QUALITY" =~ ^(low|mid|high)$ ]]; then
+    echo -e "${RED}ERROR: Quality must be low, mid, or high${NC}"
+    exit 1
+fi
 
 # Validate sleep interval
 if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
@@ -79,12 +113,10 @@ VIDEO_FORMATS="mp4 webm mkv avi mov"
 
 if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     DOWNLOAD_TYPE="audio"
-    YTDLP_FORMAT_ARGS="-f ba -x --audio-format $FORMAT_LOWER"
     OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
     echo -e "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
 elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     DOWNLOAD_TYPE="video"
-    YTDLP_FORMAT_ARGS="-f bestvideo+bestaudio --merge-output-format ${FORMAT_LOWER}"
     OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
     echo -e "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
 else
@@ -92,31 +124,41 @@ else
     exit 1
 fi
 
+set_quality_params "$QUALITY" "$FORMAT"
+echo -e "${BLUE}Quality: $QUALITY (forcing ${FORMAT_LOWER} conversion)${NC}"
+
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 cd "$OUTPUT_DIR" || exit 1
 
-# Set up file paths
-ARCHIVE_DIR="archive_recovered"
-RECOVERED_LOG="recovered_ids.txt"
-DOWNLOADED_LOG="downloaded_ids.txt"
-FAILED_LOG="failed_ids.txt"
-PERMANENTLY_FAILED_LOG="permanently_failed_ids.txt"
+# Set up hidden file paths with dot prefix
+ARCHIVE_DIR=".archive_recovered"
+RECOVERED_LOG=".recovered_ids.txt"
+DOWNLOADED_LOG=".downloaded_ids.txt"
+FAILED_LOG=".failed_ids.txt"
+PERMANENTLY_FAILED_LOG=".permanently_failed_ids.txt"
+YTDLP_ARCHIVE=".ytdlp_archive.txt"
 
 mkdir -p "$ARCHIVE_DIR"
-touch "$RECOVERED_LOG" "$DOWNLOADED_LOG" "$PERMANENTLY_FAILED_LOG"
+touch "$RECOVERED_LOG" "$DOWNLOADED_LOG" "$PERMANENTLY_FAILED_LOG" "$YTDLP_ARCHIVE"
 
 # Functions
-is_recovered() { grep -Fxq "$1" "$RECOVERED_LOG" 2>/dev/null; }
-is_downloaded() { grep -Fxq "$1" "$DOWNLOADED_LOG" 2>/dev/null; }
-is_permanently_failed() { grep -Fxq "$1" "$PERMANENTLY_FAILED_LOG" 2>/dev/null; }
-
-mark_recovered() { echo "$1" >> "$RECOVERED_LOG"; }
-mark_downloaded() { echo "$1" >> "$DOWNLOADED_LOG"; }
-mark_permanently_failed() { echo "$1" >> "$PERMANENTLY_FAILED_LOG"; }
+mark_recovered() { 
+    echo "$1" >> "$RECOVERED_LOG"
+    sync
+}
+mark_downloaded() { 
+    echo "$1" >> "$DOWNLOADED_LOG"
+    echo "youtube $1" >> "$YTDLP_ARCHIVE"
+    sync
+}
+mark_permanently_failed() { 
+    echo "$1" >> "$PERMANENTLY_FAILED_LOG"
+    sync
+}
 
 remove_from_failed() {
     local video_id="$1"
-    grep -Fxv "$video_id" "$FAILED_LOG" > "$FAILED_LOG.tmp" 2>/dev/null
+    grep -Fxv -- "$video_id" "$FAILED_LOG" > "$FAILED_LOG.tmp" 2>/dev/null
     mv "$FAILED_LOG.tmp" "$FAILED_LOG" 2>/dev/null
 }
 
@@ -129,22 +171,48 @@ search_archive() {
     
     mkdir -p "$ARCHIVE_DIR"
     
+    # GhostArchive
     local ghost_url="https://ghostarchive.org/varchive/youtube/$video_id"
-    if curl -s -o /dev/null -w "%{http_code}" "$ghost_url" 2>/dev/null | grep -q "200"; then
+    local ghost_status=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 "$ghost_url" 2>/dev/null)
+    
+    if [ "$ghost_status" = "200" ]; then
+        echo -e "${GREEN}     ✓ Found on GhostArchive, downloading...${NC}"
         yt-dlp --no-warnings --no-playlist --output "$output_file" "$ghost_url" 2>/dev/null && return 0
     fi
     
+    # Archive.org
     local archive_url="https://archive.org/details/youtube-$video_id"
-    if curl -s -o /dev/null -w "%{http_code}" "$archive_url" 2>/dev/null | grep -q "200"; then
+    local archive_status=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 15 "$archive_url" 2>/dev/null)
+    
+    if [ "$archive_status" = "200" ]; then
+        echo -e "${GREEN}     ✓ Found on Archive.org, downloading...${NC}"
         yt-dlp --no-warnings --no-playlist -f "bestvideo+bestaudio/best" --output "$output_file" "$archive_url" 2>/dev/null && return 0
     fi
     
-    local wayback_timestamp=$(curl -s "https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id" 2>/dev/null | grep -oP '"timestamp":"\K[0-9]+' | head -1)
-    if [ -n "$wayback_timestamp" ]; then
-        local embed_url="https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id"
-        yt-dlp --no-warnings --no-playlist --output "$output_file" "$embed_url" 2>/dev/null && return 0
+    # Wayback Machine
+    local wayback_api="https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id"
+    local wayback_response=$(curl -sL --max-time 15 "$wayback_api" 2>/dev/null)
+    
+    if [ -n "$wayback_response" ]; then
+        local wayback_timestamp=$(echo "$wayback_response" | sed -n 's/.*"timestamp":"\([0-9]*\)".*/\1/p' | head -1)
+        
+        if [ -n "$wayback_timestamp" ] && [ "$wayback_timestamp" != "null" ]; then
+            local embed_url="https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id"
+            echo -e "${GREEN}     ✓ Found Wayback capture, attempting download...${NC}"
+            yt-dlp --no-warnings --no-playlist --output "$output_file" "$embed_url" 2>/dev/null && return 0
+        fi
     fi
     
+    # Hobune.stream
+    local hobune_url="https://hobune.stream/yt/${video_id}.mp4"
+    local hobune_status=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 10 "$hobune_url" 2>/dev/null)
+    
+    if [ "$hobune_status" = "200" ]; then
+        echo -e "${GREEN}     ✓ Found on Hobune.stream, downloading...${NC}"
+        yt-dlp --no-warnings --no-playlist --output "$output_file" "$hobune_url" 2>/dev/null && return 0
+    fi
+    
+    echo -e "${RED}     ✗ Not found in any archive${NC}"
     return 1
 }
 
@@ -154,29 +222,37 @@ echo -e "${GREEN}Retry Failed Downloads${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
 echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
+echo "Quality: $QUALITY"
 echo "Delay between retries: ${SLEEP_INTERVAL}s"
 echo ""
 
 if [ ! -f "$FAILED_LOG" ] || [ ! -s "$FAILED_LOG" ]; then
-    echo -e "${YELLOW}No failed_ids.txt found or it's empty. Nothing to retry.${NC}"
+    echo -e "${YELLOW}No .failed_ids.txt found or it's empty. Nothing to retry.${NC}"
     exit 1
 fi
 
-# Check internet
 if ! check_internet; then
     wait_for_internet
 fi
 
-# Filter out permanently failed videos
+# Filter out permanently failed videos and already downloaded
 TEMP_RETRY_LIST=".retry_list_temp.txt"
 > "$TEMP_RETRY_LIST"
 
 while IFS= read -r video_id; do
     [ -z "$video_id" ] && continue
-    if is_permanently_failed "$video_id"; then
+    
+    # Use -- with grep to handle hyphens
+    if grep -Fxq -- "$video_id" "$PERMANENTLY_FAILED_LOG" 2>/dev/null; then
         echo -e "${CYAN}  Skipping permanently failed: $video_id${NC}"
         remove_from_failed "$video_id"
-    elif ! is_recovered "$video_id" && ! is_downloaded "$video_id"; then
+    elif grep -Fxq -- "$video_id" "$DOWNLOADED_LOG" 2>/dev/null; then
+        echo -e "${CYAN}  Skipping already downloaded: $video_id${NC}"
+        remove_from_failed "$video_id"
+    elif grep -Fxq -- "$video_id" "$RECOVERED_LOG" 2>/dev/null; then
+        echo -e "${CYAN}  Skipping already recovered: $video_id${NC}"
+        remove_from_failed "$video_id"
+    else
         echo "$video_id" >> "$TEMP_RETRY_LIST"
     fi
 done < "$FAILED_LOG"
@@ -204,20 +280,21 @@ while IFS= read -r video_id; do
     echo ""
     echo -e "${YELLOW}[$CURRENT/$TOTAL] RETRYING: $video_id${NC}"
     
-    # Check internet before each attempt
     if ! check_internet; then
         wait_for_internet
     fi
     
-    # Try YouTube
     echo -e "${BLUE}  → Trying YouTube...${NC}"
-    if yt-dlp --cookies-from-browser firefox \
+    yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
-           $YTDLP_FORMAT_ARGS \
+           --download-archive "$YTDLP_ARCHIVE" \
+           $YTDLP_EXTRA_ARGS \
            --embed-thumbnail --add-metadata \
            --output "$OUTPUT_TEMPLATE" \
-           --no-overwrites --continue --no-warnings \
-           "https://youtube.com/watch?v=$video_id" 2>/dev/null; then
+           --no-overwrites --continue \
+           "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
         echo -e "${GREEN}  ✓ Downloaded successfully${NC}"
         mark_downloaded "$video_id"
         remove_from_failed "$video_id"
@@ -225,7 +302,6 @@ while IFS= read -r video_id; do
     else
         echo -e "${RED}  ✗ Still unavailable on YouTube${NC}"
         
-        # Try archive recovery
         echo -e "${BLUE}  → Attempting archive recovery...${NC}"
         if search_archive "$video_id"; then
             echo -e "${GREEN}  ✓ Recovered from archive!${NC}"
@@ -241,7 +317,6 @@ while IFS= read -r video_id; do
         fi
     fi
     
-    # Delay
     if [ $CURRENT -lt $TOTAL ]; then
         echo -e "${BLUE}  Waiting ${SLEEP_INTERVAL}s...${NC}"
         sleep "$SLEEP_INTERVAL"
@@ -250,25 +325,18 @@ done < "$TEMP_RETRY_LIST"
 
 rm -f "$TEMP_RETRY_LIST"
 
-# Process archive_recovered files
+# Ask to run Move-Recovered if files were recovered
 if [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
     echo ""
-    echo -e "${BLUE}Processing recovered files...${NC}"
-    for file in "$ARCHIVE_DIR"/*; do
-        [ -f "$file" ] || continue
-        filename=$(basename "$file")
-        if [[ "${filename##*.}" == "$FORMAT_LOWER" ]]; then
-            mv "$file" "$OUTPUT_DIR/" 2>/dev/null
-            echo -e "${GREEN}  ✓ Moved: $filename${NC}"
+    echo -e "${MAGENTA}Archive recovered files found in: $ARCHIVE_DIR${NC}"
+    read -p "Run Move-Recovered.sh to process these files? (y/N): " -r answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        if [ -f "./Move-Recovered.sh" ]; then
+            ./Move-Recovered.sh -o "$OUTPUT_DIR" -f "$FORMAT" -q "$QUALITY"
         else
-            ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$OUTPUT_DIR/${filename%.*}.$FORMAT_LOWER" -y 2>/dev/null
-            if [ $? -eq 0 ]; then
-                rm "$file"
-                echo -e "${GREEN}  ✓ Converted: ${filename%.*}.$FORMAT_LOWER${NC}"
-            fi
+            echo -e "${RED}Move-Recovered.sh not found${NC}"
         fi
-    done
-    rmdir "$ARCHIVE_DIR" 2>/dev/null
+    fi
 fi
 
 # Summary
@@ -281,4 +349,3 @@ echo -e "${GREEN}✓ Recovered from archives: $RECOVERED${NC}"
 echo -e "${RED}✗ Permanently failed: $STILL_FAILED${NC}"
 echo ""
 echo "Permanently failed videos saved to: $PERMANENTLY_FAILED_LOG"
-echo "These videos will not be retried again."
