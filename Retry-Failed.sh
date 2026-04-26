@@ -1,18 +1,11 @@
 #!/bin/bash
 
-# ========== CONFIGURATION ==========
-OUTPUT_DIR="$HOME/Music/Tak"
-SLEEP_INTERVAL=11
-ARCHIVE_DIR="$OUTPUT_DIR/archive_recovered"
-RECOVERED_LOG="$OUTPUT_DIR/recovered_ids.txt"
-DOWNLOADED_LOG="$OUTPUT_DIR/downloaded_ids.txt"
-FAILED_LOG="$OUTPUT_DIR/failed_ids.txt"
-# ====================================
-
-mkdir -p "$ARCHIVE_DIR"
-touch "$RECOVERED_LOG" "$DOWNLOADED_LOG"
-
-cd "$OUTPUT_DIR" || exit 1
+# ========== DEFAULT CONFIGURATION ==========
+OUTPUT_DIR="$(pwd)"  # Default to current directory
+SLEEP_INTERVAL=11     # Default 11 seconds
+ENABLE_ARCHIVE=true   # Default true for retry script
+FORMAT="mp3"          # Default format
+# ===========================================
 
 # Colors
 RED='\033[0;31m'
@@ -21,6 +14,78 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+# Help function
+show_help() {
+    echo "Usage: $0 [-o OUTPUT_DIR] [-t SLEEP_INTERVAL] [-f FORMAT] [-h]"
+    echo ""
+    echo "Options:"
+    echo "  -o DIR        Output directory (default: current directory)"
+    echo "  -t SECONDS    Sleep interval between retries (default: 11)"
+    echo "  -f FORMAT     Output format (default: mp3)"
+    echo "                Audio: mp3, m4a, opus, aac, flac, wav"
+    echo "                Video: mp4, webm, mkv, avi, mov"
+    echo "  -h            Show this help message"
+    echo ""
+    echo "Note: Archive recovery is always enabled for retry script"
+    echo ""
+    echo "Examples:"
+    echo "  $0"
+    echo "  $0 -o \"$HOME/Music\" -t 5"
+    echo "  $0 -f mp4 -t 10                     # Download as MP4 video"
+    echo "  $0 -f opus -t 3                     # Download as Opus audio"
+}
+
+# Parse arguments
+while getopts "o:t:f:h" opt; do
+    case $opt in
+        o) OUTPUT_DIR="$OPTARG" ;;
+        t) SLEEP_INTERVAL="$OPTARG" ;;
+        f) FORMAT="$OPTARG" ;;
+        h) show_help; exit 0 ;;
+        *) show_help; exit 1 ;;
+    esac
+done
+
+# Validate sleep interval is a number
+if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}ERROR: Sleep interval must be a number${NC}"
+    exit 1
+fi
+
+# Validate format and set yt-dlp parameters
+FORMAT_LOWER=$(echo "$FORMAT" | tr '[:upper:]' '[:lower:]')
+AUDIO_FORMATS="mp3 m4a aac flac wav opus vorbis"
+VIDEO_FORMATS="mp4 webm mkv avi mov"
+
+# Check if format is audio or video
+if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
+    DOWNLOAD_TYPE="audio"
+    YTDLP_FORMAT_ARGS="-f ba -x --audio-format $FORMAT_LOWER"
+    OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
+    echo -e "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
+elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
+    DOWNLOAD_TYPE="video"
+    YTDLP_FORMAT_ARGS="-f bestvideo[ext=${FORMAT_LOWER}]+bestaudio/best[ext=${FORMAT_LOWER}] --merge-output-format ${FORMAT_LOWER}"
+    OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
+    echo -e "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
+else
+    echo -e "${RED}ERROR: Unsupported format '$FORMAT'${NC}"
+    echo "Supported audio formats: $AUDIO_FORMATS"
+    echo "Supported video formats: $VIDEO_FORMATS"
+    exit 1
+fi
+
+# Set up directories and files
+ARCHIVE_DIR="$OUTPUT_DIR/archive_recovered"
+RECOVERED_LOG="$OUTPUT_DIR/recovered_ids.txt"
+DOWNLOADED_LOG="$OUTPUT_DIR/downloaded_ids.txt"
+FAILED_LOG="$OUTPUT_DIR/failed_ids.txt"
+
+mkdir -p "$ARCHIVE_DIR"
+touch "$RECOVERED_LOG" "$DOWNLOADED_LOG"
+
+cd "$OUTPUT_DIR" || exit 1
 
 # Functions
 is_recovered() {
@@ -41,30 +106,18 @@ mark_downloaded() {
 
 remove_from_failed() {
     local video_id="$1"
-    # Create temp file without the video ID
     grep -Fxv "$video_id" "$FAILED_LOG" > "$FAILED_LOG.tmp" 2>/dev/null
     mv "$FAILED_LOG.tmp" "$FAILED_LOG" 2>/dev/null
 }
 
-# Enhanced archive search function (same as smart_download.sh)
+# Archive search function
 search_archive() {
     local video_id="$1"
     local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
     
     echo -e "${BLUE}  → Searching archives for $video_id...${NC}"
     
-    # ========== METHOD 1: Check for direct Archive.org upload ==========
-    local archive_direct="https://archive.org/details/youtube-$video_id"
-    local direct_check=$(curl -s -o /dev/null -w "%{http_code}" "$archive_direct" 2>/dev/null)
-    
-    if [ "$direct_check" = "200" ]; then
-        echo -e "${BLUE}  → Found direct Archive.org entry, attempting download...${NC}"
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$archive_direct" 2>/dev/null && return 0
-    fi
-    
-    # ========== METHOD 2: GhostArchive (best for video files) ==========
+    # METHOD 1: GhostArchive
     local ghost_url="https://ghostarchive.org/varchive/youtube/$video_id"
     local ghost_check=$(curl -s -o /dev/null -w "%{http_code}" "$ghost_url" 2>/dev/null)
     
@@ -75,59 +128,19 @@ search_archive() {
                "$ghost_url" 2>/dev/null && return 0
     fi
     
-    # ========== METHOD 3: Wayback Machine with actual video extraction ==========
+    # METHOD 2: Wayback Machine
     echo -e "${BLUE}  → Checking Wayback Machine...${NC}"
-    
-    # Get the newest capture timestamp
     local wayback_api="https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id"
     local wayback_timestamp=$(curl -s "$wayback_api" | grep -oP '"timestamp":"\K[0-9]+' | head -1)
     
     if [ -n "$wayback_timestamp" ]; then
-        local wayback_page_url="https://web.archive.org/web/${wayback_timestamp}/https://youtube.com/watch?v=$video_id"
-        echo -e "${BLUE}  → Found capture from $wayback_timestamp${NC}"
-        
-        # Download the archived HTML
-        local archived_html=$(curl -s --max-time 30 "$wayback_page_url")
-        
-        if [ -n "$archived_html" ]; then
-            # Try multiple patterns to extract video URLs
-            
-            # Pattern 1: Direct MP4/WebM URLs in page source
-            local video_url=$(echo "$archived_html" | grep -oP 'https?://web\.archive\.org/web/[0-9]+/[^"\'' ]+\.(mp4|webm|m3u8)' | head -1)
-            
-            # Pattern 2: YouTube googlevideo.com URLs (archived)
-            if [ -z "$video_url" ]; then
-                video_url=$(echo "$archived_html" | grep -oP 'https?://[^"\'' ]+\.googlevideo\.com/[^"\'' ]+' | head -1)
-            fi
-            
-            # Pattern 3: Base64 encoded video URLs in player config
-            if [ -z "$video_url" ]; then
-                local player_config=$(echo "$archived_html" | grep -oP 'var ytInitialPlayerResponse = \K\{.+?\}\;' | head -1)
-                if [ -n "$player_config" ]; then
-                    video_url=$(echo "$player_config" | grep -oP '"url":"[^"]+"' | head -1 | cut -d'"' -f4 | sed 's/\\\//\//g')
-                fi
-            fi
-            
-            # Pattern 4: Try iframe embed version
-            if [ -z "$video_url" ]; then
-                local embed_url="https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id"
-                echo -e "${BLUE}  → Trying embed player...${NC}"
-                yt-dlp --no-warnings \
-                       --output "$output_file" \
-                       "$embed_url" 2>/dev/null && return 0
-            fi
-            
-            # If we found a video URL, try to download it
-            if [ -n "$video_url" ]; then
-                echo -e "${BLUE}  → Extracted video URL, downloading...${NC}"
-                yt-dlp --no-warnings \
-                       --output "$output_file" \
-                       "$video_url" 2>/dev/null && return 0
-            fi
-        fi
+        local embed_url="https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id"
+        yt-dlp --no-warnings \
+               --output "$output_file" \
+               "$embed_url" 2>/dev/null && return 0
     fi
     
-    # ========== METHOD 4: Hobune.stream (community video archive) ==========
+    # METHOD 3: Hobune.stream
     local hobune_url="https://hobune.stream/yt/${video_id}.mp4"
     local hobune_check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$hobune_url" 2>/dev/null)
     
@@ -138,29 +151,6 @@ search_archive() {
                "$hobune_url" 2>/dev/null && return 0
     fi
     
-    # ========== METHOD 5: Try multiple Wayback Machine timestamps ==========
-    echo -e "${BLUE}  → Trying multiple Wayback captures...${NC}"
-    
-    # Get all timestamps for this video
-    local all_timestamps=$(curl -s "https://web.archive.org/cdx/search/cdx?url=youtube.com/watch?v=$video_id&output=json&limit=10" 2>/dev/null | grep -oP '[0-9]{14}' | head -5)
-    
-    for timestamp in $all_timestamps; do
-        local alt_wayback_url="https://web.archive.org/web/${timestamp}/https://youtube.com/watch?v=$video_id"
-        echo -e "${BLUE}  → Trying capture from $timestamp...${NC}"
-        
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$alt_wayback_url" 2>/dev/null && return 0
-        
-        # Also try iframe version
-        local alt_embed_url="https://web.archive.org/web/${timestamp}if_/https://www.youtube.com/embed/$video_id"
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$alt_embed_url" 2>/dev/null && return 0
-        
-        sleep 1
-    done
-    
     return 1
 }
 
@@ -169,7 +159,7 @@ echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Retry Failed Downloads with Archive Search${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
-echo "Archive directory: $ARCHIVE_DIR"
+echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
 echo "Delay between retries: ${SLEEP_INTERVAL}s"
 echo ""
 
@@ -216,9 +206,10 @@ while IFS= read -r video_id; do
     echo -e "${BLUE}  → Trying YouTube...${NC}"
     yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
-           -f "ba" -x --audio-format mp3 --audio-quality 0 \
-           --embed-thumbnail --add-metadata \
-           --output "%(uploader)s - %(title)s.%(ext)s" \
+           $YTDLP_FORMAT_ARGS \
+           --embed-thumbnail \
+           --add-metadata \
+           --output "$OUTPUT_TEMPLATE" \
            --no-overwrites --continue --no-warnings \
            "https://youtube.com/watch?v=$video_id" 2>/dev/null
     
@@ -253,6 +244,34 @@ done < "$TEMP_RETRY_LIST"
 # Cleanup
 rm -f "$TEMP_RETRY_LIST"
 
+# Process archive_recovered files
+if [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
+    echo ""
+    echo -e "${BLUE}Processing recovered files...${NC}"
+    
+    for file in "$ARCHIVE_DIR"/*; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            extension="${filename##*.}"
+            name_without_ext="${filename%.*}"
+            
+            if [[ "${extension,,}" == "$FORMAT_LOWER" ]]; then
+                mv "$file" "$OUTPUT_DIR/" 2>/dev/null
+                echo -e "${GREEN}  ✓ Moved: $filename${NC}"
+            elif [[ "$DOWNLOAD_TYPE" == "audio" ]]; then
+                temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
+                ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$temp_file" -y 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    rm "$file"
+                    echo -e "${GREEN}  ✓ Converted to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
+                fi
+            fi
+        fi
+    done
+    
+    rmdir "$ARCHIVE_DIR" 2>/dev/null
+fi
+
 # Final summary
 echo ""
 echo -e "${GREEN}=========================================${NC}"
@@ -263,22 +282,9 @@ echo -e "${GREEN}✓ Downloaded from YouTube: $SUCCESS${NC}"
 echo -e "${GREEN}✓ Recovered from archives: $RECOVERED${NC}"
 echo -e "${RED}✗ Still failed: $STILL_FAILED${NC}"
 echo ""
+echo "Files saved to: $OUTPUT_DIR"
+echo "Format: $FORMAT_LOWER"
 
 if [ $STILL_FAILED -gt 0 ]; then
     echo -e "${YELLOW}Remaining failed videos saved to: $FAILED_LOG${NC}"
-    echo ""
-    echo -e "${CYAN}You can manually try these URLs:${NC}"
-    echo "  https://ghostarchive.org/varchive/youtube/VIDEO_ID"
-    echo "  https://web.archive.org/web/*/https://youtube.com/watch?v=VIDEO_ID"
-    echo "  https://hobune.stream/yt/VIDEO_ID.mp4"
-    echo ""
-    echo "Or try searching on:"
-    echo "  https://filmot.com (search by video ID)"
-fi
-
-# Show recently recovered files
-if [ $RECOVERED -gt 0 ]; then
-    echo ""
-    echo -e "${GREEN}Recently recovered files:${NC}"
-    ls -lt "$ARCHIVE_DIR" 2>/dev/null | head -6
 fi

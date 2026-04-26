@@ -5,6 +5,7 @@ OUTPUT_DIR="$(pwd)"  # Default to current directory
 SLEEP_INTERVAL=11     # Default 11 seconds
 ENABLE_ARCHIVE=false  # Default false (disabled)
 PLAYLIST_URL=""       # Required argument
+FORMAT="mp3"          # Default format (mp3, m4a, opus, webm, mp4, etc.)
 # ===========================================
 
 # Colors
@@ -17,7 +18,7 @@ NC='\033[0m'
 
 # Help function
 show_help() {
-    echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SLEEP_INTERVAL] [-a] [-h]"
+    echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SLEEP_INTERVAL] [-f FORMAT] [-a] [-h]"
     echo ""
     echo "Required:"
     echo "  -p URL        YouTube playlist URL"
@@ -25,21 +26,27 @@ show_help() {
     echo "Options:"
     echo "  -o DIR        Output directory (default: current directory)"
     echo "  -t SECONDS    Sleep interval between downloads (default: 11)"
+    echo "  -f FORMAT     Output format (default: mp3)"
+    echo "                Audio: mp3, m4a, opus, aac, flac, wav"
+    echo "                Video: mp4, webm, mkv, avi, mov"
     echo "  -a            Enable archive recovery (default: disabled)"
     echo "  -h            Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 -p \"https://youtube.com/playlist?list=ABC123\""
     echo "  $0 -p \"URL\" -o \"$HOME/Music\" -t 5 -a"
-    echo "  $0 -p \"URL\" -o \"\$(pwd)/playlist\" -t 15"
+    echo "  $0 -p \"URL\" -f mp4 -t 10                    # Download as MP4 video"
+    echo "  $0 -p \"URL\" -f opus -t 3                     # Download as Opus audio"
+    echo "  $0 -p \"URL\" -f flac -t 15                    # Download as FLAC audio"
 }
 
 # Parse arguments
-while getopts "p:o:t:ah" opt; do
+while getopts "p:o:t:f:ah" opt; do
     case $opt in
         p) PLAYLIST_URL="$OPTARG" ;;
         o) OUTPUT_DIR="$OPTARG" ;;
         t) SLEEP_INTERVAL="$OPTARG" ;;
+        f) FORMAT="$OPTARG" ;;
         a) ENABLE_ARCHIVE=true ;;
         h) show_help; exit 0 ;;
         *) show_help; exit 1 ;;
@@ -56,6 +63,30 @@ fi
 # Validate sleep interval is a number
 if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}ERROR: Sleep interval must be a number${NC}"
+    exit 1
+fi
+
+# Validate format and set yt-dlp parameters
+FORMAT_LOWER=$(echo "$FORMAT" | tr '[:upper:]' '[:lower:]')
+AUDIO_FORMATS="mp3 m4a aac flac wav opus vorbis"
+VIDEO_FORMATS="mp4 webm mkv avi mov"
+
+# Check if format is audio or video
+if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
+    DOWNLOAD_TYPE="audio"
+    YTDLP_FORMAT_ARGS="-f ba -x --audio-format $FORMAT_LOWER"
+    OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
+    echo -e "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
+elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
+    DOWNLOAD_TYPE="video"
+    # For video, download best quality with audio
+    YTDLP_FORMAT_ARGS="-f bestvideo[ext=${FORMAT_LOWER}]+bestaudio/best[ext=${FORMAT_LOWER}] --merge-output-format ${FORMAT_LOWER}"
+    OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
+    echo -e "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
+else
+    echo -e "${RED}ERROR: Unsupported format '$FORMAT'${NC}"
+    echo "Supported audio formats: $AUDIO_FORMATS"
+    echo "Supported video formats: $VIDEO_FORMATS"
     exit 1
 fi
 
@@ -145,6 +176,7 @@ echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Smart YouTube Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
+echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
 echo "Delay between downloads: ${SLEEP_INTERVAL}s"
 echo "Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ENABLED" || echo "DISABLED" )"
 echo ""
@@ -204,9 +236,10 @@ while IFS= read -r video_id; do
     echo -e "${BLUE}  → Trying YouTube...${NC}"
     yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
-           -f "ba" -x --audio-format mp3 --audio-quality 0 \
-           --embed-thumbnail --add-metadata \
-           --output "%(uploader)s - %(title)s.%(ext)s" \
+           $YTDLP_FORMAT_ARGS \
+           --embed-thumbnail \
+           --add-metadata \
+           --output "$OUTPUT_TEMPLATE" \
            --no-overwrites --continue --no-warnings \
            "https://youtube.com/watch?v=$video_id" 2>/dev/null
     
@@ -254,15 +287,25 @@ if [ "$ENABLE_ARCHIVE" = true ] && [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCH
             extension="${filename##*.}"
             name_without_ext="${filename%.*}"
             
-            if [[ "${extension,,}" == "mp3" ]]; then
+            # Only process if format matches or needs conversion
+            if [[ "${extension,,}" == "$FORMAT_LOWER" ]]; then
                 mv "$file" "$OUTPUT_DIR/" 2>/dev/null
                 echo -e "${GREEN}  ✓ Moved: $filename${NC}"
-            else
-                temp_mp3="$OUTPUT_DIR/${name_without_ext}.mp3"
-                ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$temp_mp3" -y 2>/dev/null
+            elif [[ "$DOWNLOAD_TYPE" == "audio" ]]; then
+                # Convert to target audio format
+                temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
+                ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$temp_file" -y 2>/dev/null
                 if [ $? -eq 0 ]; then
                     rm "$file"
-                    echo -e "${GREEN}  ✓ Converted: ${name_without_ext}.mp3${NC}"
+                    echo -e "${GREEN}  ✓ Converted to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
+                fi
+            else
+                # For video formats, try to keep as-is or convert
+                temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
+                ffmpeg -i "$file" -c copy "$temp_file" -y 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    rm "$file"
+                    echo -e "${GREEN}  ✓ Remuxed to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
                 fi
             fi
         fi
@@ -284,6 +327,7 @@ echo -e "${GREEN}✓ Recovered from archives: $RECOVERED_VIDEOS${NC}"
 echo -e "${RED}✗ Failed (not found anywhere): $FAILED_VIDEOS${NC}"
 echo ""
 echo "Files saved to: $OUTPUT_DIR"
+echo "Format: $FORMAT_LOWER"
 if [ "$ENABLE_ARCHIVE" = true ]; then
     echo "Download log: $LOG_FILE"
     echo "Recovered log: $RECOVERED_LOG"
