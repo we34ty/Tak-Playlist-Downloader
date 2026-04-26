@@ -2,7 +2,7 @@
 
 # ========== DEFAULT CONFIGURATION ==========
 OUTPUT_DIR="$(pwd)"  # Default to current directory
-FORMAT="mp3"          # Default format (for conversion)
+FORMAT="mp3"          # Default format
 # ===========================================
 
 # Colors
@@ -22,12 +22,6 @@ show_help() {
     echo "                Audio: mp3, m4a, aac, flac, wav, opus"
     echo "                Video: mp4, webm, mkv, avi, mov"
     echo "  -h            Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  $0"
-    echo "  $0 -o \"$HOME/Music/Tak\""
-    echo "  $0 -f mp4                    # Convert to MP4 video"
-    echo "  $0 -f flac -o \"$HOME/Music\" # Convert to FLAC audio"
 }
 
 # Parse arguments
@@ -53,13 +47,15 @@ elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     echo -e "${BLUE}Target format: $FORMAT_LOWER (video)${NC}"
 else
     echo -e "${RED}ERROR: Unsupported format '$FORMAT'${NC}"
-    echo "Supported audio formats: $AUDIO_FORMATS"
-    echo "Supported video formats: $VIDEO_FORMATS"
     exit 1
 fi
 
-ARCHIVE_DIR="$OUTPUT_DIR/archive_recovered"
-LOG_FILE="$OUTPUT_DIR/recovered_moved.log"
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
+cd "$OUTPUT_DIR" || exit 1
+
+# Now set up paths relative to OUTPUT_DIR
+ARCHIVE_DIR="archive_recovered"
+LOG_FILE="recovered_moved.log"
 
 touch "$LOG_FILE"
 
@@ -104,24 +100,24 @@ while IFS= read -r file; do
     
     # Check if already in target format
     if [[ "${extension,,}" == "$FORMAT_LOWER" ]]; then
-        dest_file="$OUTPUT_DIR/$filename"
+        dest_file="$filename"
         
         # Handle duplicates
         if [ -f "$dest_file" ]; then
             base="${name_without_ext}"
             counter=1
-            while [ -f "$OUTPUT_DIR/${base}_${counter}.$FORMAT_LOWER" ]; do
+            while [ -f "${base}_${counter}.$FORMAT_LOWER" ]; do
                 counter=$((counter + 1))
             done
-            dest_file="$OUTPUT_DIR/${base}_${counter}.$FORMAT_LOWER"
-            echo -e "${BLUE}  → Duplicate, saving as: $(basename "$dest_file")${NC}"
+            dest_file="${base}_${counter}.$FORMAT_LOWER"
+            echo -e "${BLUE}  → Duplicate, saving as: $dest_file${NC}"
         fi
         
         mv "$file" "$dest_file" 2>/dev/null
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}  ✓ Moved (already $FORMAT_LOWER)${NC}"
             MOVED=$((MOVED + 1))
-            echo "$(basename "$dest_file")" >> "$LOG_FILE"
+            echo "$dest_file" >> "$LOG_FILE"
         else
             echo -e "${RED}  ✗ Failed to move file${NC}"
             FAILED=$((FAILED + 1))
@@ -130,42 +126,38 @@ while IFS= read -r file; do
         # Convert to target format
         echo -e "${BLUE}  → Converting $extension to $FORMAT_LOWER...${NC}"
         
-        temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
+        temp_file="${name_without_ext}.$FORMAT_LOWER"
         
         # Handle duplicates
         if [ -f "$temp_file" ]; then
             base="${name_without_ext}"
             counter=1
-            while [ -f "$OUTPUT_DIR/${base}_${counter}.$FORMAT_LOWER" ]; do
+            while [ -f "${base}_${counter}.$FORMAT_LOWER" ]; do
                 counter=$((counter + 1))
             done
-            temp_file="$OUTPUT_DIR/${base}_${counter}.$FORMAT_LOWER"
+            temp_file="${base}_${counter}.$FORMAT_LOWER"
         fi
         
         # Convert based on type
         if [[ "$CONVERSION_TYPE" == "audio" ]]; then
-            # Audio conversion
             ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$temp_file" -y 2>/dev/null
         else
-            # Video conversion (remux if possible, re-encode if needed)
             ffmpeg -i "$file" -c copy "$temp_file" -y 2>/dev/null
-            # If copy fails, try re-encoding
             if [ $? -ne 0 ]; then
                 ffmpeg -i "$file" -c:v libx264 -c:a aac "$temp_file" -y 2>/dev/null
             fi
         fi
         
         if [ $? -eq 0 ] && [ -f "$temp_file" ]; then
-            echo -e "${GREEN}  ✓ Converted to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
+            echo -e "${GREEN}  ✓ Converted to $FORMAT_LOWER: $temp_file${NC}"
             rm "$file"
             CONVERTED=$((CONVERTED + 1))
-            echo "$(basename "$temp_file")" >> "$LOG_FILE"
+            echo "$temp_file" >> "$LOG_FILE"
         else
             echo -e "${RED}  ✗ Conversion failed${NC}"
             FAILED=$((FAILED + 1))
         fi
     fi
-    
 done < <(find "$ARCHIVE_DIR" -type f \( -iname "*.mp3" -o -iname "*.m4a" -o -iname "*.webm" -o -iname "*.opus" -o -iname "*.mp4" -o -iname "*.flac" -o -iname "*.wav" -o -iname "*.aac" -o -iname "*.mkv" -o -iname "*.avi" -o -iname "*.mov" \) 2>/dev/null | sort)
 
 # Summary
