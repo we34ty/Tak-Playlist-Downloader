@@ -249,18 +249,19 @@ Waiting for connection to resume...
 
 ### Recommended Delays by Playlist Size
 
-| Playlist Size | Min Delay | Recommended | Safe Delay | Time (10s delay) |
-|--------------|-----------|-------------|------------|------------------|
-| 1-10 songs   | 0-2s      | 2s          | 5s         | < 1 min          |
-| 11-50 songs  | 2-3s      | 3s          | 5s         | 5-10 min         |
-| 51-100 songs | 3-5s      | 5s          | 8s         | 15-25 min        |
-| 101-250      | 5-8s      | 8s          | 10s        | 30-45 min        |
-| 251-500      | 8-10s     | 10s         | 12s        | 1.5-2 hrs        |
-| 501-1,000    | 10-12s    | 12s         | 15s        | 3-4 hrs          |
-| 1,001-2,000  | 12-15s    | 15s         | 20s        | 6-8 hrs          |
-| 2,001-3,000  | 15s       | 15-18s      | 20-25s     | 9-12 hrs         |
-| 3,001-5,000  | 15-20s    | 18s         | 25s        | 15-20 hrs        |
-| 5,000+ songs | 20-30s    | 25s         | 30+s       | 35+ hrs          |
+
+| Playlist Size    | Min Delay | Recommended Delay | Safe Delay | Time (at Recommended Delay) |
+|------------------|-----------|------------------|------------|----------------------------|
+| 1-10 songs       | 0-2s      | 2s               | 5s         | < 1 minute                 |
+| 11-50 songs      | 2-3s      | 3s               | 5s         | 2-3 minutes                |
+| 51-100 songs     | 3-5s      | 5s               | 8s         | 4-8 minutes                |
+| 101-250 songs    | 5-8s      | 8s               | 10s        | 13-33 minutes              |
+| 251-500 songs    | 8-10s     | 10s              | 12s        | 42-83 minutes              |
+| 501-1,000 songs  | 10-12s    | 12s              | 15s        | 1.7-3.3 hours              |
+| 1,001-2,000 songs| 12-15s    | 15s              | 20s        | 4.2-8.3 hours              |
+| 2,001-3,000 songs| 15s       | 18s              | 20-25s     | 10-15 hours                |
+| 3,001-5,000 songs| 15-20s    | 18s              | 25s        | 15-25 hours                |
+| 5,000+ songs     | 20-30s    | 25s              | 30+s       | 35-70 hours                |
 
 #### Risk Levels
 
