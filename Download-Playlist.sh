@@ -149,7 +149,7 @@ search_archive() {
 
 # ========== EXTRACT VIDEO IDs ==========
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}YouTube Playlist Downloader${NC}"
+echo -e "${GREEN}Tak Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
 echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
