@@ -5,7 +5,7 @@ OUTPUT_DIR="$(pwd)"  # Default to current directory
 SLEEP_INTERVAL=11     # Default 11 seconds
 ENABLE_ARCHIVE=false  # Default false (disabled)
 PLAYLIST_URL=""       # Required argument
-FORMAT="mp3"          # Default format (mp3, m4a, opus, webm, mp4, etc.)
+FORMAT="mp3"          # Default format
 # ===========================================
 
 # Colors
@@ -16,28 +16,24 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Clean playlist URL
+clean_playlist_url() {
+    echo "$1" | sed 's/&si=[^&]*//g' | sed 's/?si=[^&]*//g'
+}
+
 # Help function
 show_help() {
-    echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SLEEP_INTERVAL] [-f FORMAT] [-a] [-h]"
+    echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-a] [-h]"
     echo ""
     echo "Required:"
     echo "  -p URL        YouTube playlist URL"
     echo ""
     echo "Options:"
     echo "  -o DIR        Output directory (default: current directory)"
-    echo "  -t SECONDS    Sleep interval between downloads (default: 11)"
-    echo "  -f FORMAT     Output format (default: mp3)"
-    echo "                Audio: mp3, m4a, opus, aac, flac, wav"
-    echo "                Video: mp4, webm, mkv, avi, mov"
-    echo "  -a            Enable archive recovery (default: disabled)"
-    echo "  -h            Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  $0 -p \"https://youtube.com/playlist?list=ABC123\""
-    echo "  $0 -p \"URL\" -o \"$HOME/Music\" -t 5 -a"
-    echo "  $0 -p \"URL\" -f mp4 -t 10                    # Download as MP4 video"
-    echo "  $0 -p \"URL\" -f opus -t 3                     # Download as Opus audio"
-    echo "  $0 -p \"URL\" -f flac -t 15                    # Download as FLAC audio"
+    echo "  -t SECONDS    Sleep between downloads (default: 11, 0 = no delay)"
+    echo "  -f FORMAT     Output format: mp3, m4a, opus, flac, mp4, webm, etc."
+    echo "  -a            Enable archive recovery for deleted videos"
+    echo "  -h            Show this help"
 }
 
 # Parse arguments
@@ -60,18 +56,20 @@ if [ -z "$PLAYLIST_URL" ]; then
     exit 1
 fi
 
-# Validate sleep interval is a number
+# Clean URL
+PLAYLIST_URL=$(clean_playlist_url "$PLAYLIST_URL")
+
+# Validate sleep interval
 if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}ERROR: Sleep interval must be a number${NC}"
     exit 1
 fi
 
-# Validate format and set yt-dlp parameters
+# Set format parameters
 FORMAT_LOWER=$(echo "$FORMAT" | tr '[:upper:]' '[:lower:]')
-AUDIO_FORMATS="mp3 m4a aac flac wav opus vorbis"
+AUDIO_FORMATS="mp3 m4a aac flac wav opus"
 VIDEO_FORMATS="mp4 webm mkv avi mov"
 
-# Check if format is audio or video
 if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     DOWNLOAD_TYPE="audio"
     YTDLP_FORMAT_ARGS="-f ba -x --audio-format $FORMAT_LOWER"
@@ -79,257 +77,210 @@ if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     echo -e "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
 elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     DOWNLOAD_TYPE="video"
-    # For video, download best quality with audio
-    YTDLP_FORMAT_ARGS="-f bestvideo[ext=${FORMAT_LOWER}]+bestaudio/best[ext=${FORMAT_LOWER}] --merge-output-format ${FORMAT_LOWER}"
+    YTDLP_FORMAT_ARGS="-f bestvideo+bestaudio --merge-output-format ${FORMAT_LOWER}"
     OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
     echo -e "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
 else
     echo -e "${RED}ERROR: Unsupported format '$FORMAT'${NC}"
-    echo "Supported audio formats: $AUDIO_FORMATS"
-    echo "Supported video formats: $VIDEO_FORMATS"
     exit 1
 fi
 
-# Create output directory
+# ========== CREATE OUTPUT DIRECTORY ==========
 mkdir -p "$OUTPUT_DIR"
 
-# Set up log files
-LOG_FILE="$OUTPUT_DIR/downloaded_ids.txt"
-FAILED_LOG="$OUTPUT_DIR/failed_ids.txt"
-RECOVERED_LOG="$OUTPUT_DIR/recovered_ids.txt"
-ARCHIVE_DIR="$OUTPUT_DIR/archive_recovered"
-
-touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG"
+# Change to output directory FIRST before creating any file paths
 cd "$OUTPUT_DIR" || exit 1
+
+# Now set up all file paths (we are already inside OUTPUT_DIR)
+LOG_FILE="downloaded_ids.txt"
+FAILED_LOG="failed_ids.txt"
+RECOVERED_LOG="recovered_ids.txt"
+ARCHIVE_DIR="archive_recovered"
+VIDEO_IDS_FILE="playlist_videos.txt"
+
+# Initialize files
+touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG"
 
 # Functions
 is_downloaded() {
     grep -Fxq "$1" "$LOG_FILE" 2>/dev/null || grep -Fxq "$1" "$RECOVERED_LOG" 2>/dev/null
 }
 
-mark_downloaded() {
-    echo "$1" >> "$LOG_FILE"
-}
-
-mark_recovered() {
-    echo "$1" >> "$RECOVERED_LOG"
-}
-
-mark_failed() {
-    echo "$1" >> "$FAILED_LOG"
-}
+mark_downloaded() { echo "$1" >> "$LOG_FILE"; }
+mark_recovered() { echo "$1" >> "$RECOVERED_LOG"; }
+mark_failed() { echo "$1" >> "$FAILED_LOG"; }
 
 cleanup() {
     echo -e "\n\n${YELLOW}Interrupted. Progress saved. Run again to resume.${NC}"
     exit 0
 }
-
 trap cleanup SIGINT SIGTERM
 
-# Enhanced archive search function (only used if -a is enabled)
+# Archive search function
 search_archive() {
     local video_id="$1"
     local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
     
-    echo -e "${BLUE}  → Searching archives for $video_id...${NC}"
+    echo -e "${BLUE}  → Searching archives...${NC}"
     
-    # METHOD 1: GhostArchive
+    # Create archive directory if needed
+    mkdir -p "$ARCHIVE_DIR"
+    
+    # GhostArchive
     local ghost_url="https://ghostarchive.org/varchive/youtube/$video_id"
-    local ghost_check=$(curl -s -o /dev/null -w "%{http_code}" "$ghost_url" 2>/dev/null)
-    
-    if [ "$ghost_check" = "200" ]; then
-        echo -e "${BLUE}  → Found on GhostArchive, attempting download...${NC}"
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$ghost_url" 2>/dev/null && return 0
+    if curl -s -o /dev/null -w "%{http_code}" "$ghost_url" 2>/dev/null | grep -q "200"; then
+        yt-dlp --no-warnings --output "$output_file" "$ghost_url" 2>/dev/null && return 0
     fi
     
-    # METHOD 2: Wayback Machine
-    echo -e "${BLUE}  → Checking Wayback Machine...${NC}"
-    local wayback_api="https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id"
-    local wayback_timestamp=$(curl -s "$wayback_api" | grep -oP '"timestamp":"\K[0-9]+' | head -1)
-    
+    # Wayback Machine
+    local wayback_timestamp=$(curl -s "https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id" 2>/dev/null | grep -oP '"timestamp":"\K[0-9]+' | head -1)
     if [ -n "$wayback_timestamp" ]; then
-        local embed_url="https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id"
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$embed_url" 2>/dev/null && return 0
+        yt-dlp --no-warnings --output "$output_file" "https://web.archive.org/web/${wayback_timestamp}if_/https://www.youtube.com/embed/$video_id" 2>/dev/null && return 0
     fi
     
-    # METHOD 3: Hobune.stream
+    # Hobune.stream
     local hobune_url="https://hobune.stream/yt/${video_id}.mp4"
-    local hobune_check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$hobune_url" 2>/dev/null)
-    
-    if [ "$hobune_check" = "200" ]; then
-        echo -e "${BLUE}  → Found on Hobune.stream, downloading...${NC}"
-        yt-dlp --no-warnings \
-               --output "$output_file" \
-               "$hobune_url" 2>/dev/null && return 0
+    if curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$hobune_url" 2>/dev/null | grep -q "200"; then
+        yt-dlp --no-warnings --output "$output_file" "$hobune_url" 2>/dev/null && return 0
     fi
     
     return 1
 }
 
-# Extract video IDs from playlist
-VIDEO_IDS_FILE="$OUTPUT_DIR/playlist_videos.txt"
+# ========== EXTRACT VIDEO IDs ==========
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}Smart YouTube Playlist Downloader${NC}"
+echo -e "${GREEN}YouTube Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
 echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
-echo "Delay between downloads: ${SLEEP_INTERVAL}s"
-echo "Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ENABLED" || echo "DISABLED" )"
+echo "Delay: ${SLEEP_INTERVAL}s"
+echo "Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ON" || echo "OFF" )"
 echo ""
 
-echo -e "${BLUE}Fetching playlist information...${NC}"
+echo -e "${BLUE}Fetching playlist...${NC}"
 
-# Try multiple methods to get IDs
+# Clear and extract IDs
+> "$VIDEO_IDS_FILE"
+
+# Direct extraction (same as working manual command)
 yt-dlp --cookies-from-browser firefox \
-       --extractor-args youtubetab:skip=authcheck \
-       --flat-playlist --print "%(id)s" \
-       "$PLAYLIST_URL" 2>/dev/null > "$VIDEO_IDS_FILE"
+       --flat-playlist \
+       --print "%(id)s" \
+       "$PLAYLIST_URL" >> "$VIDEO_IDS_FILE" 2>/dev/null
 
+# If no IDs, try with authcheck bypass
 if [ ! -s "$VIDEO_IDS_FILE" ]; then
     yt-dlp --cookies-from-browser firefox \
-           --extractor-args "youtube:player_client=android" \
            --extractor-args youtubetab:skip=authcheck \
            --flat-playlist --print "%(id)s" \
-           "$PLAYLIST_URL" 2>/dev/null > "$VIDEO_IDS_FILE"
+           "$PLAYLIST_URL" >> "$VIDEO_IDS_FILE" 2>/dev/null
 fi
 
+# Remove empty lines
+sed -i '/^$/d' "$VIDEO_IDS_FILE" 2>/dev/null
+
+# Final check
 if [ ! -s "$VIDEO_IDS_FILE" ]; then
     echo -e "${RED}ERROR: Could not extract video IDs${NC}"
+    echo ""
+    echo "Manual test command (works):"
+    echo "yt-dlp --cookies-from-browser firefox --flat-playlist --print \"%(id)s\" \"$PLAYLIST_URL\""
     exit 1
 fi
 
 TOTAL=$(wc -l < "$VIDEO_IDS_FILE")
-DOWNLOADED_COUNT=$(grep -Fxcf "$VIDEO_IDS_FILE" "$LOG_FILE" 2>/dev/null || echo 0)
-RECOVERED_COUNT=$(grep -Fxcf "$VIDEO_IDS_FILE" "$RECOVERED_LOG" 2>/dev/null || echo 0)
-REMAINING=$((TOTAL - DOWNLOADED_COUNT - RECOVERED_COUNT))
+DOWNLOADED_COUNT=$(grep -Fxf "$VIDEO_IDS_FILE" "$LOG_FILE" 2>/dev/null | wc -l)
+REMAINING=$((TOTAL - DOWNLOADED_COUNT))
 
 echo "Total videos: $TOTAL"
-echo "Successfully downloaded: $DOWNLOADED_COUNT"
-echo "Recovered from archives: $RECOVERED_COUNT"
+echo "Already downloaded: $DOWNLOADED_COUNT"
 echo "Remaining: $REMAINING"
 echo ""
 
-# Download loop
+# ========== DOWNLOAD LOOP ==========
 PROCESSED=0
-SKIPPED=0
-FAILED_VIDEOS=0
-RECOVERED_VIDEOS=0
 YOUTUBE_SUCCESS=0
+RECOVERED_VIDEOS=0
+FAILED_VIDEOS=0
 
 while IFS= read -r video_id; do
-    # Check if already downloaded or recovered
+    [ -z "$video_id" ] && continue
+    
+    # Skip already downloaded
     if is_downloaded "$video_id"; then
-        echo "[$(printf "%4d" $((++PROCESSED)))/$TOTAL] SKIP: $video_id (already have)"
-        SKIPPED=$((SKIPPED + 1))
+        echo "[$(printf "%4d" $((++PROCESSED)))/$TOTAL] SKIP: $video_id"
         continue
     fi
     
     PROCESSED=$((PROCESSED + 1))
     echo ""
-    echo -e "${YELLOW}[$(printf "%4d" $PROCESSED)/$TOTAL] PROCESSING: $video_id${NC}"
+    echo -e "${YELLOW}[$PROCESSED/$TOTAL] DOWNLOADING: $video_id${NC}"
     
-    # Try normal yt-dlp download first
-    echo -e "${BLUE}  → Trying YouTube...${NC}"
-    yt-dlp --cookies-from-browser firefox \
+    # Download from YouTube
+    if yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
            $YTDLP_FORMAT_ARGS \
-           --embed-thumbnail \
-           --add-metadata \
+           --embed-thumbnail --add-metadata \
            --output "$OUTPUT_TEMPLATE" \
            --no-overwrites --continue --no-warnings \
-           "https://youtube.com/watch?v=$video_id" 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}  ✓ Downloaded successfully from YouTube${NC}"
+           "https://youtube.com/watch?v=$video_id" 2>/dev/null; then
+        echo -e "${GREEN}  ✓ Success${NC}"
         mark_downloaded "$video_id"
         YOUTUBE_SUCCESS=$((YOUTUBE_SUCCESS + 1))
     else
-        echo -e "${RED}  ✗ Failed on YouTube (private/deleted/blocked/age-restricted)${NC}"
+        echo -e "${RED}  ✗ YouTube failed${NC}"
         
-        # Try archive recovery only if enabled
         if [ "$ENABLE_ARCHIVE" = true ]; then
-            echo -e "${BLUE}  → Attempting archive recovery...${NC}"
             if search_archive "$video_id"; then
-                echo -e "${GREEN}  ✓ Recovered from archive!${NC}"
+                echo -e "${GREEN}  ✓ Recovered from archive${NC}"
                 mark_recovered "$video_id"
                 RECOVERED_VIDEOS=$((RECOVERED_VIDEOS + 1))
             else
-                echo -e "${RED}  ✗ Not found in any archive${NC}"
+                echo -e "${RED}  ✗ Not found in archives${NC}"
                 mark_failed "$video_id"
                 FAILED_VIDEOS=$((FAILED_VIDEOS + 1))
             fi
         else
-            echo -e "${YELLOW}  → Archive recovery disabled (use -a to enable)${NC}"
             mark_failed "$video_id"
             FAILED_VIDEOS=$((FAILED_VIDEOS + 1))
         fi
     fi
     
-    # Delay (skip after last)
-    if [ $PROCESSED -lt $TOTAL ]; then
+    # Delay
+    if [ $SLEEP_INTERVAL -gt 0 ] && [ $PROCESSED -lt $TOTAL ]; then
         echo -e "${BLUE}  Waiting ${SLEEP_INTERVAL}s...${NC}"
         sleep "$SLEEP_INTERVAL"
     fi
 done < "$VIDEO_IDS_FILE"
 
-# Process archive_recovered files if they exist
-if [ "$ENABLE_ARCHIVE" = true ] && [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
+# Process recovered files
+if [ "$ENABLE_ARCHIVE" = true ] && [ -d "$ARCHIVE_DIR" ]; then
     echo ""
     echo -e "${BLUE}Processing recovered files...${NC}"
-    
     for file in "$ARCHIVE_DIR"/*; do
-        if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            extension="${filename##*.}"
-            name_without_ext="${filename%.*}"
-            
-            # Only process if format matches or needs conversion
-            if [[ "${extension,,}" == "$FORMAT_LOWER" ]]; then
-                mv "$file" "$OUTPUT_DIR/" 2>/dev/null
-                echo -e "${GREEN}  ✓ Moved: $filename${NC}"
-            elif [[ "$DOWNLOAD_TYPE" == "audio" ]]; then
-                # Convert to target audio format
-                temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
-                ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$temp_file" -y 2>/dev/null
-                if [ $? -eq 0 ]; then
-                    rm "$file"
-                    echo -e "${GREEN}  ✓ Converted to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
-                fi
-            else
-                # For video formats, try to keep as-is or convert
-                temp_file="$OUTPUT_DIR/${name_without_ext}.$FORMAT_LOWER"
-                ffmpeg -i "$file" -c copy "$temp_file" -y 2>/dev/null
-                if [ $? -eq 0 ]; then
-                    rm "$file"
-                    echo -e "${GREEN}  ✓ Remuxed to $FORMAT_LOWER: $(basename "$temp_file")${NC}"
-                fi
+        [ -f "$file" ] || continue
+        filename=$(basename "$file")
+        if [[ "${filename##*.}" == "$FORMAT_LOWER" ]]; then
+            mv "$file" "$OUTPUT_DIR/"
+            echo -e "${GREEN}  ✓ Moved: $filename${NC}"
+        else
+            ffmpeg -i "$file" -vn -ar 44100 -ac 2 -b:a 192k "$OUTPUT_DIR/${filename%.*}.$FORMAT_LOWER" -y 2>/dev/null
+            if [ $? -eq 0 ]; then
+                rm "$file"
+                echo -e "${GREEN}  ✓ Converted: ${filename%.*}.$FORMAT_LOWER${NC}"
             fi
         fi
     done
-    
     rmdir "$ARCHIVE_DIR" 2>/dev/null
 fi
 
-# Final summary
+# Summary
 echo ""
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}DOWNLOAD COMPLETE!${NC}"
+echo -e "${GREEN}COMPLETE!${NC}"
 echo -e "${GREEN}=========================================${NC}"
-echo "Total videos in playlist: $TOTAL"
-echo "Videos processed: $PROCESSED"
-echo "Skipped (already had): $SKIPPED"
-echo -e "${GREEN}✓ Downloaded from YouTube: $YOUTUBE_SUCCESS${NC}"
-echo -e "${GREEN}✓ Recovered from archives: $RECOVERED_VIDEOS${NC}"
-echo -e "${RED}✗ Failed (not found anywhere): $FAILED_VIDEOS${NC}"
+echo -e "${GREEN}✓ YouTube downloads: $YOUTUBE_SUCCESS${NC}"
+echo -e "${GREEN}✓ Archive recovered: $RECOVERED_VIDEOS${NC}"
+echo -e "${RED}✗ Failed: $FAILED_VIDEOS${NC}"
 echo ""
 echo "Files saved to: $OUTPUT_DIR"
-echo "Format: $FORMAT_LOWER"
-if [ "$ENABLE_ARCHIVE" = true ]; then
-    echo "Download log: $LOG_FILE"
-    echo "Recovered log: $RECOVERED_LOG"
-    echo "Failed log: $FAILED_LOG"
-fi

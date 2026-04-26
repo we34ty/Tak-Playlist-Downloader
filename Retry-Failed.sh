@@ -66,7 +66,7 @@ if echo "$AUDIO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     echo -e "${BLUE}Format: $FORMAT_LOWER (audio only)${NC}"
 elif echo "$VIDEO_FORMATS" | grep -qw "$FORMAT_LOWER"; then
     DOWNLOAD_TYPE="video"
-    YTDLP_FORMAT_ARGS="-f bestvideo[ext=${FORMAT_LOWER}]+bestaudio/best[ext=${FORMAT_LOWER}] --merge-output-format ${FORMAT_LOWER}"
+    YTDLP_FORMAT_ARGS="-f bestvideo+bestaudio --merge-output-format ${FORMAT_LOWER}"
     OUTPUT_TEMPLATE="%(uploader)s - %(title)s.%(ext)s"
     echo -e "${BLUE}Format: $FORMAT_LOWER (video + audio)${NC}"
 else

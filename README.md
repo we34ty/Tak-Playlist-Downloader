@@ -1,17 +1,54 @@
 # Tak YouTube Playlist Tools
 
+
 ## Prerequisites
 
 Before using these scripts, ensure you have the following installed on your system:
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) (YouTube downloader)
 - [ffmpeg](https://ffmpeg.org/) (audio/video conversion)
-- [jq](https://stedolan.github.io/jq/) (JSON parsing, required for `api_extract.sh`)
 - [curl](https://curl.se/) (HTTP requests)
+- [deno](https://deno.com/) (JavaScript/TypeScript runtime, if you use any Deno scripts)
 - Bash shell (most Linux distributions include this by default)
 
 **Optional:**
 - Firefox browser (for cookie extraction in some scripts)
+
+### Installation
+
+#### yt-dlp
+```sh
+python3 -m pip install -U yt-dlp
+# or
+sudo apt install yt-dlp
+```
+
+#### ffmpeg
+```sh
+sudo apt install ffmpeg
+# or
+sudo dnf install ffmpeg
+# or
+brew install ffmpeg
+```
+
+#### curl
+```sh
+sudo apt install curl
+# or
+sudo dnf install curl
+# or
+brew install curl
+```
+
+#### Deno
+```sh
+curl -fsSL https://deno.land/install.sh | sh
+# or see https://deno.com/manual/getting_started/installation for other methods
+```
+
+#### Bash
+Bash is included by default on most Linux distributions and macOS. On Windows, use [WSL](https://docs.microsoft.com/en-us/windows/wsl/) or Git Bash.
 
 ---
 
@@ -90,8 +127,6 @@ Processes files in the `archive_recovered` directory, moving or converting them 
 | 100-500 songs     | 5-10 seconds     | Off     | 1-2 hours       |
 | 500-2000 songs    | 10-15 seconds    | Off     | 6-10 hours      |
 | 2000+ songs       | 15-30 seconds    | Off     | Overnight       |
-
-For 3,000 songs with 11s delay: ~9 hours
 
 ---
 
