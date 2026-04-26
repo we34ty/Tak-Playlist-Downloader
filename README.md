@@ -178,7 +178,7 @@ Move-Recovered.bat [options]
 
 | Playlist Size     | Recommended Delay| Archive | Estimated Time  |
 |-------------------|------------------|---------|-----------------|
-| < 100 songs       | 2-5 seconds      | Optional| 5-15 minutes    |
+| < 100 songs       | 2-5 seconds      | Optional| 15-30 minutes   |
 | 100-500 songs     | 5-10 seconds     | Off     | 1-2 hours       |
 | 500-2000 songs    | 10-15 seconds    | Off     | 6-10 hours      |
 | 2000+ songs       | 15-30 seconds    | Off     | Overnight       |
