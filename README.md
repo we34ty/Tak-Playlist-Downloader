@@ -26,7 +26,6 @@ All scripts use hidden files (starting with `.`) to keep your directory clean:
 | Recovered log            | `.recovered_ids.txt`        | Videos recovered from archives (Linux only)      |
 | Permanently failed log   | `.permanently_failed_ids.txt` | Videos that failed permanently (never retry)   |
 | Playlist IDs             | `.playlist_videos.txt`      | All video IDs from the playlist                  |
-| yt-dlp archive           | `.ytdlp_archive.txt`        | Internal download archive for yt-dlp             |
 | Archive directory        | `.archive_recovered/`       | Temporary storage for recovered files (Linux only)|
 
 These hidden files won’t clutter your music directory when using `ls`. Use `ls -la` to see them.

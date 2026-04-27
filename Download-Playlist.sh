@@ -117,7 +117,9 @@ show_help() {
     echo "  -t SECONDS    Sleep between downloads (default: 11, 0 = no delay)"
     echo "  -f FORMAT     Output format: mp3, m4a, opus, flac, mp4, webm, etc. (default: mp3)"
     echo "  -q QUALITY    Quality: low, mid, high (default: mid)"
-    echo "  -a            Enable archive recovery for deleted videos"
+    echo "                Audio: low(80k), mid(192k), high(320k)"
+    echo "                Video: low(worst), mid(480p), high(best)"
+    echo "  -a            Enable archive recovery for deleted videos (Linux only)"
     echo "  -h            Show this help"
 }
 
@@ -189,17 +191,15 @@ RECOVERED_LOG=".recovered_ids.txt"
 PERMANENTLY_FAILED_LOG=".permanently_failed_ids.txt"
 ARCHIVE_DIR=".archive_recovered"
 VIDEO_IDS_FILE=".playlist_videos.txt"
-YTDLP_ARCHIVE=".ytdlp_archive.txt"
 
 # Initialize files
-touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG" "$PERMANENTLY_FAILED_LOG" "$YTDLP_ARCHIVE"
+touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG" "$PERMANENTLY_FAILED_LOG"
 
 echo -e "${BLUE}Log files: $LOG_FILE, $PERMANENTLY_FAILED_LOG, etc.${NC}"
 
 # Simple mark functions
 mark_downloaded() { 
     echo "$1" >> "$LOG_FILE"
-    echo "youtube $1" >> "$YTDLP_ARCHIVE"
     sync
 }
 
@@ -225,7 +225,7 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-# Archive search function
+# Archive search function (only used if -a is enabled)
 search_archive() {
     local video_id="$1"
     local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
@@ -385,10 +385,9 @@ while IFS= read -r video_id; do
         wait_for_internet
     fi
     
-    # Download with yt-dlp
+    # Download with yt-dlp (no separate archive file needed)
     yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
-           --download-archive "$YTDLP_ARCHIVE" \
            $YTDLP_EXTRA_ARGS \
            --embed-thumbnail --add-metadata \
            --output "$OUTPUT_TEMPLATE" \

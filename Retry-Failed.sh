@@ -136,19 +136,17 @@ RECOVERED_LOG=".recovered_ids.txt"
 DOWNLOADED_LOG=".downloaded_ids.txt"
 FAILED_LOG=".failed_ids.txt"
 PERMANENTLY_FAILED_LOG=".permanently_failed_ids.txt"
-YTDLP_ARCHIVE=".ytdlp_archive.txt"
 
 mkdir -p "$ARCHIVE_DIR"
-touch "$RECOVERED_LOG" "$DOWNLOADED_LOG" "$PERMANENTLY_FAILED_LOG" "$YTDLP_ARCHIVE"
+touch "$RECOVERED_LOG" "$DOWNLOADED_LOG" "$PERMANENTLY_FAILED_LOG"
 
-# Functions
+# Simple mark functions
 mark_recovered() { 
     echo "$1" >> "$RECOVERED_LOG"
     sync
 }
 mark_downloaded() { 
     echo "$1" >> "$DOWNLOADED_LOG"
-    echo "youtube $1" >> "$YTDLP_ARCHIVE"
     sync
 }
 mark_permanently_failed() { 
@@ -287,7 +285,6 @@ while IFS= read -r video_id; do
     echo -e "${BLUE}  → Trying YouTube...${NC}"
     yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
-           --download-archive "$YTDLP_ARCHIVE" \
            $YTDLP_EXTRA_ARGS \
            --embed-thumbnail --add-metadata \
            --output "$OUTPUT_TEMPLATE" \
