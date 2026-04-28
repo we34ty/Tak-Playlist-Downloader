@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tak Playlist Downloader
+YouTube Playlist Downloader GUI
 Cross-platform GUI for Download-Playlist, Retry-Failed, and Move-Recovered scripts
 """
 
@@ -16,12 +16,19 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from pathlib import Path
 from datetime import datetime
 
-class TakDownloaderGUI:
+# Function to strip ANSI color codes
+def strip_ansi_codes(text):
+    """Remove ANSI escape sequences (color codes) from text"""
+    ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+    return ansi_escape.sub('', text)
+
+
+class YouTubeDownloaderGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Tak Playlist Downloader")
-        self.root.geometry("950x700")  # Reduced from 800 to 700
-        self.root.minsize(800, 600)    # Set minimum size
+        self.root.geometry("950x700")
+        self.root.minsize(800, 600)
         self.root.resizable(True, True)
         
         # Detect OS and set script extension
@@ -35,7 +42,7 @@ class TakDownloaderGUI:
         self.config_dir = self.get_config_dir()
         
         # Settings file path - saved in user's home directory (persists across versions)
-        self.settings_file = self.config_dir / "yt_downloader_settings.json"
+        self.settings_file = self.config_dir / "tak_downloader_settings.json"
         
         # Script directory - where the PowerShell/bash scripts are located
         # By default, look in the same directory as the executable
@@ -49,7 +56,7 @@ class TakDownloaderGUI:
         # Current browsing directory for file dialogs
         self.current_browse_dir = str(Path.cwd())
         
-        # TakData subfolder name
+        # TakData subfolder name (hidden with dot)
         self.tak_data_dir = ".TakData"
         
         # Set up the UI
@@ -61,13 +68,13 @@ class TakDownloaderGUI:
     def get_config_dir(self):
         """Get the user's config directory for storing settings"""
         if self.os_type == "Windows":
-            # Windows: %APPDATA%\YouTubeDownloader
+            # Windows: %APPDATA%\TakDownloader
             base_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData/Roaming'))
         else:
-            # Linux/macOS: ~/.config/YouTubeDownloader
+            # Linux/macOS: ~/.config/TakDownloader
             base_dir = Path.home() / '.config'
         
-        config_dir = base_dir / 'YouTubeDownloader'
+        config_dir = base_dir / 'TakDownloader'
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
     
@@ -124,7 +131,6 @@ class TakDownloaderGUI:
     
     def setup_download_tab(self):
         """Setup the Download Playlist tab"""
-        # Use grid layout with weight configuration
         main_frame = ttk.Frame(self.download_tab, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -146,7 +152,7 @@ class TakDownloaderGUI:
         ttk.Button(main_frame, text="Use Current", command=lambda: self.set_current_path(self.download_output)).grid(row=1, column=3, padx=3)
         
         # Note about TakData folder
-        ttk.Label(main_frame, text="Note: All logs and settings are stored in 'TakData' subfolder", foreground="gray").grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=2)
+        ttk.Label(main_frame, text="Note: All logs and settings are stored in '.TakData' subfolder", foreground="gray").grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=2)
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=3, column=0, columnspan=4, sticky=tk.W+tk.E, pady=5)
@@ -227,7 +233,7 @@ class TakDownloaderGUI:
         ttk.Button(main_frame, text="Use Current", command=lambda: self.set_current_path(self.retry_output)).grid(row=0, column=3, padx=3)
         
         # Note about TakData folder
-        ttk.Label(main_frame, text="Note: All logs and settings are stored in 'TakData' subfolder", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=2)
+        ttk.Label(main_frame, text="Note: All logs and settings are stored in '.TakData' subfolder", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=2)
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=2, column=0, columnspan=4, sticky=tk.W+tk.E, pady=5)
@@ -301,7 +307,7 @@ class TakDownloaderGUI:
         ttk.Button(main_frame, text="Use Current", command=lambda: self.set_current_path(self.move_output)).grid(row=0, column=3, padx=3)
         
         # Note about TakData folder
-        ttk.Label(main_frame, text="Note: All logs and settings are stored in 'TakData' subfolder", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=2)
+        ttk.Label(main_frame, text="Note: All logs and settings are stored in '.TakData' subfolder", foreground="gray").grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=2)
         
         # Separator
         ttk.Separator(main_frame, orient='horizontal').grid(row=2, column=0, columnspan=4, sticky=tk.W+tk.E, pady=5)
@@ -377,9 +383,9 @@ class TakDownloaderGUI:
         ttk.Label(info_frame, text=f"Settings saved to: {self.settings_file}").pack(anchor=tk.W, pady=2)
         ttk.Label(info_frame, text="Settings are automatically saved when you change any field").pack(anchor=tk.W, pady=2)
         ttk.Label(info_frame, text="No manual save needed - everything is auto-saved").pack(anchor=tk.W, pady=2)
-        ttk.Label(info_frame, text="Logs and script data are stored in 'TakData' subfolder in the output directory").pack(anchor=tk.W, pady=2)
+        ttk.Label(info_frame, text="Logs and script data are stored in '.TakData' subfolder in the output directory").pack(anchor=tk.W, pady=2)
         
-        # System info (make scrollable if too tall)
+        # System info
         sys_frame = ttk.LabelFrame(main_frame, text="System Information", padding="10")
         sys_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
@@ -392,7 +398,7 @@ class TakDownloaderGUI:
         about_frame = ttk.LabelFrame(main_frame, text="About", padding="10")
         about_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
-        about_text = """Tak Playlist Downloader GUI
+        about_text = """Tak Playlist Downloader
 A cross-platform graphical interface for downloading YouTube playlists.
 
 Features:
@@ -401,7 +407,7 @@ Features:
 - Retry failed downloads
 - Convert recovered files
 - Settings automatically saved
-- All logs stored in 'TakData' subfolder
+- All logs stored in '.TakData' subfolder
 
 Scripts required in the same directory as this executable:
 - Download-Playlist.ps1/.sh
@@ -410,18 +416,6 @@ Scripts required in the same directory as this executable:
         
         about_label = ttk.Label(about_frame, text=about_text, justify=tk.LEFT)
         about_label.pack(anchor=tk.W, pady=5)
-        
-        # Make settings tab scrollable if content overflows
-        canvas = tk.Canvas(main_frame)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # This is a simpler approach - just pack everything normally
-        # The settings tab is typically not too tall
     
     def browse_scripts_dir(self):
         """Browse for scripts directory"""
@@ -433,7 +427,7 @@ Scripts required in the same directory as this executable:
             self.save_settings()
     
     def load_config_from_folder(self, folder_path):
-        """Load settings from TakData/download_config.json in the selected folder"""
+        """Load settings from .TakData/download_config.json in the selected folder"""
         if not folder_path:
             messagebox.showwarning("No Folder", "Please select an output directory first.")
             return
@@ -727,7 +721,9 @@ Scripts required in the same directory as this executable:
             )
             
             for line in self.current_process.stdout:
-                status_widget.insert(tk.END, line)
+                # Strip ANSI color codes before displaying
+                clean_line = strip_ansi_codes(line)
+                status_widget.insert(tk.END, clean_line)
                 status_widget.see(tk.END)
                 self.root.update_idletasks()
             
@@ -760,7 +756,7 @@ Scripts required in the same directory as this executable:
 
 def main():
     root = tk.Tk()
-    app = TakDownloaderGUI(root)
+    app = YouTubeDownloaderGUI(root)
     root.mainloop()
 
 

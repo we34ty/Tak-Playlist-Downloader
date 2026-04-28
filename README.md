@@ -1,424 +1,282 @@
-# YouTube Playlist Downloader Suite
+# Tak Playlist Downloader
 
-A comprehensive suite of scripts for downloading YouTube playlists with advanced features including permanent failure tracking, internet disconnection handling, quality selection, and automatic resume capabilities.
+A complete solution for downloading YouTube playlists as MP3/MP4 files with automatic retry and archive recovery capabilities.
 
-## Features
+## 🚀 Quick Start (Windows .exe)
 
-- **Smart Downloading** – Downloads entire playlists with customizable formats (MP3, MP4, FLAC, etc.)
-- **Quality Selection** – Choose between low, mid, or high quality for both audio and video downloads
-- **Hidden File Organization** – All log files and archive folders use dot prefix (`.`) to stay hidden and organized
-- **Permanent Failure Tracking** – Videos that fail on YouTube are marked permanently failed and never retried
-- **Internet Disconnection Handling** – Automatically pauses downloads when internet drops and resumes when connection returns
-- **Resume Capability** – Interrupt and restart without re-downloading completed files
-- **Hyphen ID Support** – Properly handles video IDs that start with hyphens (e.g., `-_H5A1Xskjg`)
-- **Cross-Platform** – Both Windows and Linux have full support of all availible features
+### 1. Download and Extract
+- Download `TakPlaylistDownloader.exe` from the releases page
+- Create a folder (e.g., `C:\TakDownloader`) and place the .exe there
+- **No installation required** - just double-click to run
 
----
+### 2. First Run - What You Need
+The program will automatically download `yt-dlp.exe` and `ffmpeg.exe` to the same folder on first use. These are required for downloading and converting.
 
-## File Organization
+### 3. Download Your First Playlist
 
-All scripts use hidden files (starting with `.`) to keep your directory clean:
+**Step 1:** Get a YouTube playlist URL
+- Go to YouTube, open any playlist
+- Copy the URL from your browser's address bar
+- Example: `https://youtube.com/playlist?list=PLqM1J9soKXtisS_woMHvCvmHGgG7ADtlF`
 
-| File Type                | Name                        | Purpose                                         |
-|--------------------------|-----------------------------|-------------------------------------------------|
-| Downloaded log           | `.downloaded_ids.txt`       | Tracks successfully downloaded video IDs         |
-| Failed log               | `.failed_ids.txt`           | Videos that failed (pending retry)               |
-| Recovered log            | `.recovered_ids.txt`        | Videos recovered from archives       |
-| Permanently failed log   | `.permanently_failed_ids.txt` | Videos that failed permanently (never retry)   |
-| Playlist IDs             | `.playlist_videos.txt`      | All video IDs from the playlist                  |
-| Archive directory        | `.archive_recovered/`       | Temporary storage for recovered files |
+**Step 2:** Paste URL in the "Playlist URL" field
 
-These hidden files won’t clutter your music directory when using `ls`. Use `ls -la` to see them.
+**Step 3:** Choose output folder (or click "Use Current")
 
----
+**Step 4:** Click "Start Download"
 
-## Prerequisites
+That's it! Your songs will download as MP3 files (default).
 
-### Linux/macOS (Bash scripts)
+### 4. Basic Settings
+
+| Setting | What It Does | Recommended |
+|---------|--------------|-------------|
+| **Sleep Interval** | Seconds between downloads (avoid rate limiting) | 11 seconds |
+| **Format** | mp3, mp4, flac, etc. | mp3 |
+| **Quality** | low, mid, high | mid |
+| **Archive Recovery (-a)** | Finds deleted videos from Internet Archive | Enable if desired |
+
+## 📁 Folder Structure After Download
+
+Your Music Folder/
+├── .TakData/ ← All program data (hidden folder)
+│   ├── downloaded_ids.txt ← Successfully downloaded
+│   ├── failed_ids.txt ← Failed (can retry)
+│   ├── permanently_failed_ids.txt ← Truly unavailable
+│   ├── download_config.json ← Your saved settings
+│   └── archive_recovered/ ← Recovered files (temporary)
+│
+├── Artist Name - Song Title.mp3 ← Your downloaded songs
+├── Another Artist - Another Song.mp3
+└── ...
+
+> **Note:** The `.TakData` folder is hidden on Linux/macOS. On Windows, you may need to enable "Show hidden files" in File Explorer.
+
+## 🎮 Complete Workflow Example
+
+### Simple Download
+1. Open the program
+2. Paste playlist URL
+3. Click "Start Download"
+4. Wait for completion (progress shown in the window)
+
+### Download with Archive Recovery (for deleted videos)
+1. Check "Enable Archive Recovery (-a)"
+2. Click "Start Download"
+3. If a video is deleted from YouTube, the program automatically searches:
+   - GhostArchive
+   - Archive.org
+   - Wayback Machine
+   - Hobune.stream
+
+### Retry Failed Downloads
+1. Go to the "Retry Failed" tab
+2. Select the output directory (where your `.TakData` folder is)
+3. Click "Start Retry"
+
+### Move Recovered Files
+1. Go to the "Move Recovered" tab
+2. Select the output directory
+3. Click "Start Move/Convert"
+4. Files are converted to your chosen format
+
+## 🐧 Linux Users
+
+### Option 1: Run the Python Script Directly (Recommended)
 
 ```bash
-# Install yt-dlp (standalone binary recommended)
-sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
-sudo chmod a+rx /usr/local/bin/yt-dlp
+# Install required packages
+sudo apt install python3-tk python3-pip
+pip install --user pyinstaller  # optional, for building executable
 
-# Install ffmpeg
-sudo apt install ffmpeg        # Debian/Ubuntu
-sudo dnf install ffmpeg        # Fedora
-brew install ffmpeg            # macOS
-
-# Install curl (for archive recovery)
-sudo apt install curl
-
-# Install Deno (required for archive recovery on Linux)
-curl -fsSL https://deno.land/install.sh | sh
-echo 'export PATH="$HOME/.deno/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+# Download the scripts and run
+python3 yt_downloader_gui.py
 ```
 
-### Windows (PowerShell scripts)
-Everything is installed automatically by the Download-Playlist.ps1 script,
-so there is no need to download anything yourself.
+### Option 2: Use the Bash Scripts Directly
 
----
-
-## Scripts Overview
-
-### 1. Download-Playlist.sh (Linux/macOS) / Download-Playlist.ps1 (Windows)
-
-**Purpose:** Main downloader. Downloads all videos from a YouTube playlist with format selection, quality options, and configurable delay.
-
-**Key Features:**
-- Extracts all video IDs from playlist
-- Quality selection (low/mid/high) for audio bitrate or video resolution
-- Tracks downloaded and permanently failed videos
-- Auto-pauses on internet disconnection
-- Marks videos as permanently failed if unavailable on YouTube
-- Uses hidden log files (.downloaded_ids.txt, etc.)
-- Properly handles video IDs starting with hyphens
-
-**Usage (Linux/macOS):**
 ```bash
-./Download-Playlist.sh -p PLAYLIST_URL [OPTIONS]
+# Make scripts executable
+chmod +x Download-Playlist.sh Retry-Failed.sh Move-Recovered.sh
+
+# Download a playlist
+./Download-Playlist.sh -p "PLAYLIST_URL" -o "Music" -a
+
+# Retry failed downloads
+./Retry-Failed.sh -o "Music"
+
+# Move recovered files
+./Move-Recovered.sh -o "Music"
 ```
-**Usage (Windows PowerShell):**
+
+### Option 3: Build Linux Executable
+
+```bash
+# Install tkinter and pyinstaller
+sudo apt install python3-tk
+pip install --user pyinstaller
+
+# Build the executable
+pyinstaller --onefile --windowed --name "TakPlaylistDownloader" yt_downloader_gui.py
+
+# Run it
+./dist/TakPlaylistDownloader
+```
+
+## ⚙️ All Command-Line Options (for advanced users)
+
+The program runs the following scripts in the background. You can also run them directly from command line:
+
+### Download-Playlist (Main Downloader)
+
+#### Windows PowerShell
 ```powershell
-.\Download-Playlist.ps1 -p PLAYLIST_URL [OPTIONS]
+.\Download-Playlist.ps1 -p "PLAYLIST_URL" -o "OUTPUT_DIR" -t 11 -f mp3 -q mid -a
+```
+
+#### Linux/macOS Bash
+```bash
+./Download-Playlist.sh -p "PLAYLIST_URL" -o "OUTPUT_DIR" -t 11 -f mp3 -q mid -a
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| -p URL | YouTube playlist URL (required) | – |
+| -p URL | YouTube playlist URL | Required |
 | -o DIR | Output directory | Current directory |
-| -t SECONDS | Sleep between downloads | 11 |
+| -t SEC | Sleep between downloads | 11 seconds |
 | -f FORMAT | Output format (mp3, mp4, flac, etc.) | mp3 |
 | -q QUALITY | Quality: low, mid, high | mid |
-| -a | Enable archive recovery | Disabled |
-| -h | Show help | – |
+| -a | Enable archive recovery | Off |
 
-**Quality Settings:**
+### Retry-Failed
 
-| Quality | Audio (MP3/Opus/etc.) | Video (MP4/WebM/etc.) |
-|---------|-----------------------|-----------------------|
-| low     | ~80kbps               | Worst available       |
-| mid     | ~192kbps              | Up to 480p            |
-| high    | ~320kbps              | Best available        |
-
-**Examples:**
-
-Linux/macOS:
-```bash
-# Basic download as MP3 (mid quality)
-./Download-Playlist.sh -p "https://youtube.com/playlist?list=ABC123"
-
-# Download high quality audio with archive recovery
-./Download-Playlist.sh -p "URL" -o "$HOME/Music" -q high -a
-
-# Download low quality video to save space
-./Download-Playlist.sh -p "URL" -f mp4 -q low -t 5
-```
-
-Windows PowerShell:
+# Retry videos that failed
 ```powershell
-# Basic download as MP3
-.\Download-Playlist.ps1 -p "https://youtube.com/playlist?list=ABC123"
-
-# Download to specific folder with custom delay
-.\Download-Playlist.ps1 -p "URL" -o "C:\Music" -t 5 -q high
+.\Retry-Failed.ps1 -o "OUTPUT_DIR" -t 5
 ```
 
----
-
-### 2. Retry-Failed.sh (Linux/macOS) / Retry-Failed.ps1 (Windows)
-
-**Purpose:** Retries videos that failed during main download. Marks still-unavailable videos as permanently failed.
-
-**Key Features:**
-- Retries failed videos from .failed_ids.txt
-- Marks permanently failed videos to skip future retries
-- Handles internet disconnection gracefully
-- Uses hidden log files
-
-**Usage (Linux/macOS):**
-```bash
-./Retry-Failed.sh [OPTIONS]
-```
-**Usage (Windows PowerShell):**
+# With different format
 ```powershell
-.\Retry-Failed.ps1 [OPTIONS]
+.\Retry-Failed.ps1 -o "OUTPUT_DIR" -f mp4 -q high
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| -o DIR | Output directory | Current directory |
-| -t SECONDS | Sleep between retries | 11 |
-| -f FORMAT | Output format | mp3 |
-| -q QUALITY | Quality: low, mid, high | mid |
-| -h | Show help | – |
+### Move-Recovered
 
-**Examples:**
-
-Linux/macOS:
-```bash
-# Retry failed in current directory
-./Retry-Failed.sh
-
-# Retry in specific folder with high quality
-./Retry-Failed.sh -o "$HOME/Music" -q high -t 5
-```
-
-Windows PowerShell:
+# Convert recovered files
 ```powershell
-# Retry failed downloads
-.\Retry-Failed.ps1 -o "C:\Music" -t 3
+.\Move-Recovered.ps1 -o "OUTPUT_DIR" -f mp3 -q mid
 ```
 
----
+## 🔧 Troubleshooting
 
-### 3. Move-Recovered.sh
+**"No .download_config.json found"**
 
-**Purpose:** Processes files in .archive_recovered folder, converts them to the target format.
+	Run Download-Playlist first with the -p parameter to create settings
+	Or use the GUI's "Load Settings from Folder" button after first run
 
-**Usage (Linux/macOS):**
+**Weird color codes in output (Windows GUI)**
+
+	Fixed in latest version - ANSI color codes are automatically stripped
+	Output now appears as clean text
+
+**"ERROR: Cannot access directory"**
+
+	Make sure the directory path uses backslashes (\) on Windows
+	The GUI handles this automatically
+
+**Downloads are very slow**
+
+	Increase sleep interval (YouTube may throttle fast downloads)
+	Use lower quality (-q low) for faster downloads
+
+**Videos marked as permanently failed**
+
+	These videos were not found on YouTube or any archive
+	Check permanently_failed_ids.txt in the .TakData folder
+	To retry anyway, remove the ID from that file
+
+**"jq is required" on Linux**
+
 ```bash
-./Move-Recovered.sh [OPTIONS]
-```
-**Usage (Windows PowerShell):**
-```powershell
-.\Move-Recovered.ps1 [OPTIONS]
+sudo apt install jq        # Debian/Ubuntu
+sudo dnf install jq        # Fedora
+brew install jq            # macOS
 ```
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| -o DIR | Output directory | Current directory |
-| -f FORMAT | Target format for conversion | mp3 |
-| -q QUALITY | Quality: low, mid, high | mid |
-| -h | Show help | – |
+**"ModuleNotFoundError: No module named 'tkinter'" on Linux**
 
-**Examples:**
-Linux/macOS:
 ```bash
-# Convert all recovered files to MP3 (mid quality)
-./Move-Recovered.sh
-
-# Convert to high quality FLAC
-./Move-Recovered.sh -f flac -q high
+sudo apt install python3-tk
 ```
 
-Windows PowerShell:
-```powershell
-# Convert all recovered files to MP3 (mid quality)
-.\Move-Recovered.ps1
+**"error: externally-managed-environment" on Linux**
 
-# Convert to high quality FLAC
-.\Move-Recovered.ps1 -f flac -q high
-```
-
----
-
-## File Structure
-
-When scripts run, they create the following hidden files in the output directory:
-```
-OUTPUT_DIR/
-├── .downloaded_ids.txt          # Successfully downloaded from YouTube
-├── .failed_ids.txt              # Failed (to be retried)
-├── .permanently_failed_ids.txt  # Permanently unavailable (never retried)
-├── .playlist_videos.txt         # All video IDs from playlist
-├── .archive_recovered/          # Temporary folder for archive-recovered files
-│   └── (recovered files before processing)
-└── Artist - Song Name.mp3       # Your music files
-```
-
-**Log File Purposes**
-
-| File                        | Purpose                                      |
-|-----------------------------|----------------------------------------------|
-| .downloaded_ids.txt         | Videos that downloaded successfully from YouTube |
-| .failed_ids.txt             | Videos that failed but may succeed later     |
-| .permanently_failed_ids.txt | Videos not on YouTube - NEVER retried        |
-| .playlist_videos.txt        | Complete list of video IDs from playlist     |
-| .archive_recovered/         | Temporary storage for archive-recovered files|
-
----
-
-## How Permanent Failure Tracking Works
-
-1. **First attempt:** Script tries to download from YouTube
-2. **If YouTube fails (and archive is disabled or unavailable):**
-   - Video added to .permanently_failed_ids.txt
-   - Future runs will skip all videos in this file automatically
-
-This prevents wasting time on videos that truly don't exist anywhere.
-
----
-
-## Internet Disconnection Handling
-
-Both main scripts include automatic internet detection:
-- Check before each download using ping to 8.8.8.8, 1.1.1.1, and curl to google.com
-- If connection lost → Script pauses and waits
-- Retries every 30 seconds until connection returns
-- Resumes automatically when internet is restored
-
-Example output:
-```
-⚠️  No internet connection detected
-Waiting for connection to resume...
-  Still waiting... (30s elapsed)
-  Still waiting... (60s elapsed)
-✓ Internet connection restored! Resuming downloads.
-```
-
----
-
-## Quality Selection Guide
-
-**Audio Quality Comparison**
-
-| Quality | Bitrate   | File Size (per 3 min) | Use Case                        |
-|---------|-----------|-----------------------|----------------------------------|
-| low     | ~80kbps   | ~2 MB                 | Speech, podcasts, mobile data    |
-| mid     | ~192kbps  | ~4 MB                 | Music (recommended default)      |
-| high    | ~320kbps  | ~7 MB                 | Archiving, high-end audio        |
-
-**Video Quality Comparison**
-
-| Quality | Resolution         | File Size (per 3 min) | Use Case                        |
-|---------|--------------------|-----------------------|----------------------------------|
-| low     | Worst available    | ~5-10 MB              | Mobile viewing, data saving      |
-| mid     | Up to 480p         | ~15-30 MB             | Standard viewing (recommended)   |
-| high    | Best (720p-4K)     | ~50-200+ MB           | Archiving, large screens         |
-
----
-
-## Recommended Delays by Playlist Size
-
-| Playlist Size      | Min Delay | Recommended | Safe Delay | Time (at Recommended) |
-|--------------------|-----------|-------------|------------|-----------------------|
-| 1-10 songs         | 0-2s      | 2s          | 5s         | < 1 minute            |
-| 11-50 songs        | 2-3s      | 3s          | 5s         | 2-3 minutes           |
-| 51-100 songs       | 3-5s      | 5s          | 8s         | 4-8 minutes           |
-| 101-250 songs      | 5-8s      | 8s          | 10s        | 13-33 minutes         |
-| 251-500 songs      | 8-10s     | 10s         | 12s        | 42-83 minutes         |
-| 501-1,000 songs    | 10-12s    | 12s         | 15s        | 1.7-3.3 hours         |
-| 1,001-2,000 songs  | 12-15s    | 15s         | 20s        | 4.2-8.3 hours         |
-| 2,001-3,000 songs  | 15s       | 18s         | 20-25s     | 10-15 hours           |
-| 3,001-5,000 songs  | 15-20s    | 18s         | 25s        | 15-25 hours           |
-| 5,000+ songs       | 20-30s    | 25s         | 30+s       | 35-70 hours           |
-
-**Risk Levels**
-
-| Delay Range | Risk Level      | Best For                  |
-|-------------|----------------|---------------------------|
-| 0-2 seconds | High (IP ban)  | Testing only              |
-| 3-5 seconds | Medium         | Small playlists (<100)    |
-| 8-12 seconds| Low            | Most playlists            |
-| 15-20 seconds| Very Low      | Large playlists (1,000+)  |
-| 25+ seconds | Minimal        | Massive playlists (5,000+)|
-
----
-
-## Complete Workflow Examples
-
-**Linux/macOS**
 ```bash
-# First download (overnight, high quality)
-./Download-Playlist.sh -p "URL" -o "MyPlaylist" -q high -a -t 15
+# Use pipx instead
+sudo apt install pipx
+pipx install pyinstaller
 
-# Next day, retry any failures
-cd MyPlaylist
-../Retry-Failed.sh -q high -t 5
-
-# Process any recovered files
-../Move-Recovered.sh -q high
-
-# Check permanently failed videos
-cat .permanently_failed_ids.txt
+# Or use --user flag
+pip install --user pyinstaller
 ```
 
-**Windows**
-```powershell
-# First download
-.\Download-Playlist.ps1 -p "URL" -o "C:\Music" -q high -t 15
+## 💡 Tips
 
-# Retry any failures
-.\Retry-Failed.ps1 -o "C:\Music" -t 5
+	First download - Start with a small playlist to test settings
+	Large playlists - Use 10-15 second delay to avoid IP bans
+	Archive recovery - Takes longer but can recover deleted videos
+	Resume capability - Interrupt with Ctrl+C, progress is saved
+	Settings persistence - GUI settings saved to %APPDATA%\TakDownloader\ (Windows) or ~/.config/TakDownloader/ (Linux)
 
-# Process any recovered files
-.\Move-Recovered.sh -o "C:\Music" -q high
+## 📋 Requirements
 
-# Check permanently failed videos
-Get-Content C:\Music\.permanently_failed_ids.txt
-```
+### Windows (Self-contained)
 
----
+	Windows 10 or 11
+	No Python required - the .exe includes everything
 
-## Troubleshooting
+### Linux (Running Python Script)
 
-**"ERROR: Could not extract video IDs"**
-- Remove tracking parameters from URL (automatically handled by script)
-- Ensure playlist is public or you're logged into Firefox
-- Try the debug command:  
-  `yt-dlp --cookies-from-browser firefox --flat-playlist --print "%(id)s" "URL"`
+	Python 3.6+
+	tkinter (sudo apt install python3-tk)
+	yt-dlp, ffmpeg, curl, jq (auto-installed by scripts)
+	Deno (for archive recovery, auto-installed)
 
-**Videos with hyphens in ID keep re-downloading**
-- Fixed in latest version. The scripts now properly handle video IDs that start with hyphens (e.g., -_H5A1Xskjg).
+## 📝 Notes
 
-**"n challenge solving failed" (Linux only)**
-- Install Deno (required for archive recovery):  
-  `curl -fsSL https://deno.land/install.sh | sh`
+	All data files are stored in the .TakData subfolder (hidden) - never in your music folder
+	Delete .TakData to completely reset all download progress
+	Settings are automatically saved when you change any field
+	The GUI saves settings to your user profile, not the program folder
+	Downloaded files keep original filenames: Artist - Song Title.mp3
+	ANSI color codes are automatically stripped from GUI output for clean display
 
-**Script won't retry permanently failed videos**
-- Permanently failed videos go to .permanently_failed_ids.txt. To retry them anyway:  
-  `sed -i '/VIDEO_ID/d' .permanently_failed_ids.txt`
+## ❓ Common Questions
 
-**Internet keeps disconnecting**
-- The script auto-pauses and resumes. Check your connection stability.
+**Q: Can I move the .exe to another folder?**
+A: Yes, but you need to copy the .ps1 scripts and the .TakData folder with it.
 
-**Hidden files not visible**
-- Use `ls -la` on Linux/macOS or `Get-ChildItem -Force` in PowerShell to see hidden files.
+**Q: Where are my downloaded songs?**
+A: In the output directory you specified. The .TakData folder is separate.
 
----
+**Q: How do I start over?**
+A: Delete the .TakData folder in your output directory.
 
-## Platform Differences
+**Q: Can I pause and resume?**
+A: Yes, press Ctrl+C to stop. Run the same command again to resume.
 
-| Feature                    | Linux/macOS (Bash) | Windows (PowerShell) |
-|----------------------------|--------------------|----------------------|
-| Archive recovery (-a)      | ✅ Full support    | ✅ Full support     |
-| Quality selection          | ✅ Full support    | ✅ Full support      |
-| Hidden log files (.)       | ✅ Yes             | ✅ Yes               |
-| Internet disconnection     | ✅ Yes             | ✅ Yes               |
-| Permanent failure tracking | ✅ Yes             | ✅ Yes               |
-| Hyphen ID handling         | ✅ Yes             | ✅ Yes               |
-| yt-dlp integration         | ✅ Full            | ✅ Full              |
-| Move-Recovered script      | ✅ Yes             | ✅ Yes        |
+**Q: Why do I see a console window when downloading?**
+A: That's the PowerShell/Bash script running. It closes automatically when done.
 
-For full features on Windows, consider using WSL (Windows Subsystem for Linux) to run the Bash scripts.
+**Q: The program won't start?**
+A: Make sure all .ps1 files are in the same folder as the .exe.
+
+**Q: What's the .TakData folder?**
+A: It stores all program data (logs, settings, temporary files). It's hidden to keep your music folder clean.
+
+**Q: How do I see hidden folders on Windows?**
+A: In File Explorer, click "View" → check "Hidden items".
 
 ---
 
-## Notes
-
-- All scripts are idempotent – safe to re-run anytime
-- Interrupt with Ctrl+C – progress saves automatically
-- Hidden log files (starting with .) keep your directory clean
-- Video IDs starting with hyphens are properly handled
-- Permanently failed videos are never retried
-- Windows PowerShell scripts have no archive recovery feature
-
----
-
-## License
-
-These scripts are for personal use only. Downloading copyrighted content may violate YouTube’s Terms of Service.
-
----
-
-## Credits
-
-- yt-dlp – YouTube downloading
-- FFmpeg – Audio/video conversion
-- GhostArchive – Video archiving
-- Archive.org – Wayback Machine
-
----
+Disclaimer: This tool is for personal use only. Downloading copyrighted content may violate YouTube's Terms of Service.
