@@ -127,29 +127,37 @@ class YouTubeDownloaderGUI:
         self.tray_icon = None
         self.minimized_to_tray = False
         self.tray_thread = None
-        
+
         # Scheduler variables
         self.scheduler_running = False
         self.scheduler_thread = None
-        self.tasks = {}  # id -> ScheduledTask
+        self.tasks = {}
         self.task_queue = Queue()
-        self.running_tasks = {}  # id -> thread/process
+        self.current_process = None
         
         # Detect OS and set script extension
         self.os_type = platform.system()
         if self.os_type == "Windows":
             self.script_ext = ".ps1"
+            self.tray_enabled = True
         else:
             self.script_ext = ".sh"
+            self.tray_enabled = False
+            print("System tray disabled on Linux for better compatibility")
+        
+        # Override PYSTRAY_AVAILABLE based on OS
+        global PYSTRAY_AVAILABLE
+        if not self.tray_enabled:
+            PYSTRAY_AVAILABLE = False
         
         # Get the correct directory for saving settings
         self.config_dir = self.get_config_dir()
         
-        # Settings file path - saved in user's home directory (persists across versions)
+        # Settings file path
         self.settings_file = self.config_dir / "tak_downloader_settings.json"
         self.tasks_file = self.config_dir / "tak_downloader_tasks.json"
         
-        # Script directory - where the PowerShell/bash scripts are located
+        # Script directory
         if getattr(sys, 'frozen', False):
             self.script_dir = Path(os.path.dirname(sys.executable))
         else:
@@ -165,11 +173,11 @@ class YouTubeDownloaderGUI:
         self.load_settings()
         self.load_tasks()
         
-        # Bind window events
+        # Bind window events - THIS IS THE CRITICAL FIX
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # Set up system tray
-        if PYSTRAY_AVAILABLE:
+        # Set up system tray (Windows only)
+        if PYSTRAY_AVAILABLE and self.tray_enabled:
             self.root.after(100, self.setup_tray)
         
         # Start background task processor
@@ -265,14 +273,27 @@ class YouTubeDownloaderGUI:
     
     def quit_application(self):
         """Properly quit the application"""
-        self.cleanup()
+        self.minimized_to_tray = False
         self.save_settings()
         self.save_tasks()
+        self.scheduler_running = False
+        
+        # Kill any running processes
+        for task_id, task in self.tasks.items():
+            if task.running and task.process:
+                try:
+                    task.process.terminate()
+                except:
+                    pass
+        
+        # Stop the tray icon if running
         if self.tray_icon:
             try:
                 self.tray_icon.stop()
-            except Exception:
+            except:
                 pass
+        
+        # Quit the application
         self.root.quit()
         self.root.destroy()
         sys.exit(0)
@@ -1366,8 +1387,13 @@ Last Run: {task.last_run if task.last_run else 'Never'}
             return False
     
     def on_closing(self):
-        """Handle window closing - minimize to tray instead of exiting"""
-        self.minimize_to_tray()
+        """Handle window closing - exit on Linux, minimize to tray on Windows"""
+        if self.tray_enabled:
+            # On Windows, minimize to tray
+            self.minimize_to_tray()
+        else:
+            # On Linux, exit completely
+            self.quit_application()
     
     def stop_current_download(self):
         """Stop the currently running download"""
