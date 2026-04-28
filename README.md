@@ -23,7 +23,7 @@ All scripts use hidden files (starting with `.`) to keep your directory clean:
 |--------------------------|-----------------------------|-------------------------------------------------|
 | Downloaded log           | `.downloaded_ids.txt`       | Tracks successfully downloaded video IDs         |
 | Failed log               | `.failed_ids.txt`           | Videos that failed (pending retry)               |
-| Recovered log            | `.recovered_ids.txt`        | Videos recovered from archives (Linux only)      |
+| Recovered log            | `.recovered_ids.txt`        | Videos recovered from archives       |
 | Permanently failed log   | `.permanently_failed_ids.txt` | Videos that failed permanently (never retry)   |
 | Playlist IDs             | `.playlist_videos.txt`      | All video IDs from the playlist                  |
 | Archive directory        | `.archive_recovered/`       | Temporary storage for recovered files |
@@ -224,7 +224,7 @@ OUTPUT_DIR/
 ├── .failed_ids.txt              # Failed (to be retried)
 ├── .permanently_failed_ids.txt  # Permanently unavailable (never retried)
 ├── .playlist_videos.txt         # All video IDs from playlist
-├── .archive_recovered/          # Temporary folder for archive-recovered files (Linux only)
+├── .archive_recovered/          # Temporary folder for archive-recovered files
 │   └── (recovered files before processing)
 └── Artist - Song Name.mp3       # Your music files
 ```
@@ -418,7 +418,7 @@ These scripts are for personal use only. Downloading copyrighted content may vio
 
 - yt-dlp – YouTube downloading
 - FFmpeg – Audio/video conversion
-- GhostArchive – Video archiving (Linux only)
-- Archive.org – Wayback Machine (Linux only)
+- GhostArchive – Video archiving
+- Archive.org – Wayback Machine
 
 ---
