@@ -141,10 +141,6 @@ class YouTubeDownloaderGUI:
         
         # Dark mode variable
         self.dark_mode = tk.BooleanVar(value=False)
-
-        windows_theme = self.get_windows_theme()
-        if windows_theme is not None:
-            self.dark_mode.set(windows_theme)
         
         # Detect OS and set script extension
         self.os_type = platform.system()
@@ -155,6 +151,10 @@ class YouTubeDownloaderGUI:
             self.script_ext = ".sh"
             self.tray_enabled = False
             print("System tray disabled on Linux for better compatibility")
+        
+        windows_theme = self.get_windows_theme()
+        if windows_theme is not None:
+            self.dark_mode.set(windows_theme)
         
         # Override PYSTRAY_AVAILABLE based on OS
         global PYSTRAY_AVAILABLE
@@ -347,184 +347,90 @@ Categories=AudioVideo;Network;
                 messagebox.showerror("Error", "Failed to disable autostart.")
     
     def setup_styles(self):
-        """Setup ttk styles for the application based on dark mode setting"""
-        self.style = ttk.Style()
-        
+        """Setup styles for the application based on dark mode setting"""
         if self.dark_mode.get():
             # Dark mode colors
             bg = "#2d2d2d"
             fg = "#ffffff"
-            select_bg = "#0d7377"      # Teal for selection (stands out)
-            select_fg = "#ffffff"       # White text on selection
-            hover_bg = "#404040"        # Slightly lighter for hover
+            select_bg = "#0d7377"
+            select_fg = "#ffffff"
             entry_bg = "#3c3c3c"
             button_bg = "#4a4a4a"
-            active_bg = "#5a5a5a"
             trough_bg = "#1e1e1e"
-            # Running button colors (green)
-            running_bg = "#1a5d1a"
-            running_hover = "#2a7a2a"
-            # Disabled button colors
-            disabled_bg = "#3a3a3a"
-            disabled_fg = "#6a6a6a"
         else:
             # Light mode colors
             bg = "#f0f0f0"
             fg = "#000000"
-            select_bg = "#0078d4"       # Blue selection
+            select_bg = "#0078d4"
             select_fg = "#ffffff"
-            hover_bg = "#e0e0e0"
             entry_bg = "#ffffff"
             button_bg = "#e0e0e0"
-            active_bg = "#c0c0c0"
             trough_bg = "#d0d0d0"
-            # Running button colors (green)
-            running_bg = "#28a828"
-            running_hover = "#34c934"
-            # Disabled button colors
-            disabled_bg = "#d0d0d0"
-            disabled_fg = "#888888"
         
         # Configure root window background
         self.root.configure(bg=bg)
         
-        # ========== FRAME STYLES ==========
-        self.style.configure("TFrame", background=bg)
-        self.style.configure("TLabel", background=bg, foreground=fg)
-        self.style.configure("TLabelframe", background=bg, foreground=fg)
-        self.style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        # ========== CONFIGURE TTK STYLES ==========
+        style = ttk.Style()
         
-        # ========== BUTTON STYLES ==========
-        self.style.configure("TButton", 
-            background=button_bg, 
-            foreground=fg, 
-            borderwidth=1,
-            padding=4,
-            font=('TkDefaultFont', 9)
-        )
-        self.style.map("TButton",
-            background=[("active", hover_bg), ("pressed", select_bg)],
-            foreground=[("active", fg), ("pressed", select_fg)],
-            relief=[("pressed", "sunken")]
-        )
+        # Force usage of 'clam' theme which supports custom colors better
+        # On Windows, 'clam' theme works better than 'vista' or 'xpnative'
+        try:
+            style.theme_use('clam')
+        except:
+            pass  # Fall back to default theme
         
-        # ========== SCHEDULER RUNNING BUTTON STYLE ==========
-        self.style.configure("Running.TButton",
-            background=running_bg,
-            foreground="#ffffff",
-            borderwidth=1,
-            padding=4,
-            font=('TkDefaultFont', 9, 'bold')
-        )
-        self.style.map("Running.TButton",
-            background=[("active", running_hover), ("pressed", select_bg)],
-            foreground=[("active", "#ffffff"), ("pressed", select_fg)],
-            relief=[("pressed", "sunken")]
-        )
+        # Configure base styles
+        style.configure(".", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TLabelframe", background=bg, foreground=fg)
+        style.configure("TLabelframe.Label", background=bg, foreground=fg)
         
-        # ========== DISABLED BUTTON STYLE ==========
-        self.style.configure("Disabled.TButton",
-            background=disabled_bg,
-            foreground=disabled_fg,
-            borderwidth=1,
-            padding=4
-        )
+        # Button styles
+        style.configure("TButton", background=button_bg, foreground=fg, borderwidth=1, padding=6)
+        style.map("TButton",
+            background=[("active", select_bg), ("pressed", select_bg)],
+            foreground=[("active", select_fg), ("pressed", select_fg)])
         
-        # ========== ENTRY STYLES ==========
-        self.style.configure("TEntry", 
-            fieldbackground=entry_bg, 
-            foreground=fg,
-            padding=2
-        )
-        self.style.map("TEntry",
-            fieldbackground=[("focus", entry_bg), ("readonly", entry_bg)],
+        # Entry styles
+        style.configure("TEntry", fieldbackground=entry_bg, foreground=fg, padding=4)
+        style.map("TEntry",
+            fieldbackground=[("focus", entry_bg)],
             foreground=[("focus", fg)],
-            bordercolor=[("focus", select_bg)]
-        )
+            bordercolor=[("focus", select_bg)])
         
-        # ========== COMBOBOX STYLES ==========
-        self.style.configure("TCombobox", 
-            fieldbackground=entry_bg, 
-            foreground=fg,
-            padding=2
-        )
-        self.style.map("TCombobox",
+        # Combobox styles
+        style.configure("TCombobox", fieldbackground=entry_bg, foreground=fg, padding=4)
+        style.map("TCombobox",
             fieldbackground=[("readonly", entry_bg)],
             foreground=[("readonly", fg)],
             selectbackground=[("readonly", select_bg)],
-            selectforeground=[("readonly", select_fg)]
-        )
+            selectforeground=[("readonly", select_fg)])
         
-        # ========== NOTEBOOK (TABS) STYLES ==========
-        self.style.configure("TNotebook", 
-            background=bg, 
-            borderwidth=0,
-            tabmargins=[0, 0, 0, 0]
-        )
-        self.style.configure("TNotebook.Tab", 
-            background=button_bg, 
-            foreground=fg, 
-            padding=[12, 4],
-            font=('TkDefaultFont', 9)
-        )
-        self.style.map("TNotebook.Tab",
-            background=[("selected", select_bg), ("active", hover_bg)],
-            foreground=[("selected", select_fg), ("active", fg)]
-        )
+        # Notebook (tabs) styles
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", background=button_bg, foreground=fg, padding=[12, 6])
+        style.map("TNotebook.Tab",
+            background=[("selected", select_bg), ("active", select_bg)],
+            foreground=[("selected", select_fg), ("active", fg)])
         
-        # ========== CHECKBUTTON STYLES ==========
-        self.style.configure("TCheckbutton", 
-            background=bg, 
-            foreground=fg,
-            padding=2
-        )
-        self.style.map("TCheckbutton",
+        # Checkbutton styles
+        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.map("TCheckbutton",
             background=[("active", bg)],
-            foreground=[("active", fg)],
-            indicatorcolor=[("selected", select_bg)]
-        )
+            indicatorcolor=[("selected", select_bg)])
         
-        # ========== PROGRESSBAR STYLES ==========
-        self.style.configure("TProgressbar", 
-            background=select_bg, 
-            troughcolor=trough_bg, 
-            borderwidth=0
-        )
+        # Progressbar styles
+        style.configure("TProgressbar", background=select_bg, troughcolor=trough_bg)
         
-        # ========== SCROLLBAR STYLES ==========
-        self.style.configure("Vertical.TScrollbar", 
-            background=button_bg, 
-            troughcolor=trough_bg,
-            arrowcolor=fg,
-            borderwidth=0
-        )
-        self.style.configure("Horizontal.TScrollbar", 
-            background=button_bg, 
-            troughcolor=trough_bg,
-            arrowcolor=fg,
-            borderwidth=0
-        )
-        self.style.map("Vertical.TScrollbar",
-            background=[("active", hover_bg), ("pressed", select_bg)]
-        )
-        self.style.map("Horizontal.TScrollbar",
-            background=[("active", hover_bg), ("pressed", select_bg)]
-        )
+        # Scrollbar styles
+        style.configure("Vertical.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
+        style.configure("Horizontal.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
         
-        # ========== TREEVIEW (for future use) ==========
-        self.style.configure("Treeview",
-            background=entry_bg,
-            foreground=fg,
-            fieldbackground=entry_bg,
-            rowheight=24
-        )
-        self.style.map("Treeview",
-            background=[("selected", select_bg)],
-            foreground=[("selected", select_fg)]
-        )
+        # ========== CONFIGURE TK WIDGETS ==========
         
-        # ========== TK WIDGETS (not ttk) ==========
-        # Listbox (for task list)
+        # Listbox (task list)
         if hasattr(self, 'task_listbox') and self.task_listbox:
             self.task_listbox.configure(
                 bg=entry_bg,
@@ -533,15 +439,15 @@ Categories=AudioVideo;Network;
                 selectforeground=select_fg,
                 activestyle="none",
                 relief="flat",
-                borderwidth=0,
-                highlightthickness=0,
-                font=('TkDefaultFont', 9)
+                bd=0,
+                highlightthickness=0
             )
         
-        # ScrolledText widgets
-        for widget in [self.download_status, self.retry_status, self.move_status, 
-                    self.details_text, self.task_logs]:
-            if widget:
+        # Text widgets (ScrolledText)
+        text_widgets = ['download_status', 'retry_status', 'move_status', 'details_text', 'task_logs']
+        for widget_name in text_widgets:
+            if hasattr(self, widget_name) and getattr(self, widget_name):
+                widget = getattr(self, widget_name)
                 widget.configure(
                     bg=entry_bg,
                     fg=fg,
@@ -549,49 +455,75 @@ Categories=AudioVideo;Network;
                     selectbackground=select_bg,
                     selectforeground=select_fg,
                     relief="flat",
-                    borderwidth=0,
-                    highlightthickness=0,
-                    font=('TkDefaultFont', 9),
-                    wrap=tk.WORD
+                    bd=0,
+                    highlightthickness=0
                 )
         
-        # ========== APPLY FRAME STYLES TO ALL TABS ==========
-        for tab in [self.download_tab, self.retry_tab, self.move_tab, 
-                    self.scheduler_tab, self.settings_tab]:
-            if tab:
+        # Progress bars (tkinter ttk already handled)
+        
+        # ========== CONFIGURE NOTEBOOK TABS BACKGROUND ==========
+        # This is the key fix - manually set the background of each tab frame
+        for tab_name in ['download_tab', 'retry_tab', 'move_tab', 'scheduler_tab', 'settings_tab']:
+            if hasattr(self, tab_name) and getattr(self, tab_name):
+                tab = getattr(self, tab_name)
                 tab.configure(style="TFrame")
+                # Also configure all children of the tab
+                self._recursive_configure(tab, bg, fg, entry_bg, select_bg, select_fg)
         
-        # ========== UPDATE SCHEDULER BUTTONS IF THEY EXIST ==========
-        if hasattr(self, 'start_scheduler_btn') and self.start_scheduler_btn:
-            if self.scheduler_running:
-                self.start_scheduler_btn.configure(style="Running.TButton")
-                self.stop_scheduler_btn.configure(style="TButton")
-            else:
-                self.start_scheduler_btn.configure(style="TButton")
-                self.stop_scheduler_btn.configure(style="Disabled.TButton")
-        
-        # Force update of all widgets
+        # Force update
         self.root.update_idletasks()
+
+    def _recursive_configure(self, widget, bg, fg, entry_bg, select_bg, select_fg):
+        """Recursively configure all child widgets"""
+        try:
+            # Configure based on widget type
+            if isinstance(widget, ttk.Frame):
+                widget.configure(style="TFrame")
+            elif isinstance(widget, ttk.LabelFrame):
+                widget.configure(style="TLabelframe")
+            elif isinstance(widget, ttk.Label):
+                widget.configure(style="TLabel")
+            elif isinstance(widget, ttk.Button):
+                widget.configure(style="TButton")
+            elif isinstance(widget, ttk.Entry):
+                widget.configure(style="TEntry")
+            elif isinstance(widget, ttk.Combobox):
+                widget.configure(style="TCombobox")
+            elif isinstance(widget, ttk.Checkbutton):
+                widget.configure(style="TCheckbutton")
+            elif isinstance(widget, tk.Frame):
+                widget.configure(bg=bg)
+            elif isinstance(widget, tk.Label):
+                widget.configure(bg=bg, fg=fg)
+            elif isinstance(widget, tk.Listbox):
+                widget.configure(bg=entry_bg, fg=fg, selectbackground=select_bg, selectforeground=select_fg)
+            elif isinstance(widget, tk.Text):
+                widget.configure(bg=entry_bg, fg=fg, insertbackground=fg, selectbackground=select_bg, selectforeground=select_fg)
+        except:
+            pass
+        
+        # Recursively configure children
+        for child in widget.winfo_children():
+            self._recursive_configure(child, bg, fg, entry_bg, select_bg, select_fg)
 
     def toggle_dark_mode(self):
         """Toggle dark mode for the application"""
-        # Update the style
         self.setup_styles()
         
-        # Force refresh of the task list if it exists
+        # Force refresh of the task list
         if hasattr(self, 'task_listbox') and self.task_listbox:
-            # Save current selection
             current_selection = self.task_listbox.curselection()
-            # Refresh the listbox to apply new colors
             items = self.task_listbox.get(0, tk.END)
             self.task_listbox.delete(0, tk.END)
             for item in items:
                 self.task_listbox.insert(tk.END, item)
-            # Restore selection
             if current_selection:
                 self.task_listbox.selection_set(current_selection[0])
         
-        # Save the setting
+        # Refresh notebook
+        if hasattr(self, 'notebook'):
+            self.notebook.configure(style="TNotebook")
+        
         self.save_settings()
 
     def get_windows_theme(self):
@@ -643,6 +575,13 @@ Categories=AudioVideo;Network;
     
     def setup_ui(self):
         """Setup the entire user interface"""
+        style = ttk.Style()
+        try:
+            # 'clam' theme works best for custom colors on Windows
+            style.theme_use('clam')
+        except:
+            pass
+        
         main_frame = ttk.Frame(self.root, padding="5")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
