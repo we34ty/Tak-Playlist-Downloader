@@ -11,7 +11,7 @@ A comprehensive suite of scripts for downloading YouTube playlists with advanced
 - **Internet Disconnection Handling** – Automatically pauses downloads when internet drops and resumes when connection returns
 - **Resume Capability** – Interrupt and restart without re-downloading completed files
 - **Hyphen ID Support** – Properly handles video IDs that start with hyphens (e.g., `-_H5A1Xskjg`)
-- **Cross-Platform** – Bash scripts for Linux/macOS (full features), PowerShell scripts for Windows (basic features)
+- **Cross-Platform** – Both Windows and Linux have full support of all availible features
 
 ---
 
@@ -26,7 +26,7 @@ All scripts use hidden files (starting with `.`) to keep your directory clean:
 | Recovered log            | `.recovered_ids.txt`        | Videos recovered from archives (Linux only)      |
 | Permanently failed log   | `.permanently_failed_ids.txt` | Videos that failed permanently (never retry)   |
 | Playlist IDs             | `.playlist_videos.txt`      | All video IDs from the playlist                  |
-| Archive directory        | `.archive_recovered/`       | Temporary storage for recovered files (Linux only)|
+| Archive directory        | `.archive_recovered/`       | Temporary storage for recovered files |
 
 These hidden files won’t clutter your music directory when using `ls`. Use `ls -la` to see them.
 
@@ -56,21 +56,8 @@ source ~/.bashrc
 ```
 
 ### Windows (PowerShell scripts)
-
-```powershell
-# Install yt-dlp using winget
-winget install yt-dlp.yt-dlp
-
-# Install ffmpeg
-winget install ffmpeg
-
-# Or download manually and add to PATH:
-# - yt-dlp.exe: https://github.com/yt-dlp/yt-dlp/releases
-# - ffmpeg.exe: https://www.gyan.dev/ffmpeg/builds/
-
-# Set execution policy (run as Administrator)
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
+Everything is installed automatically by the Download-Playlist.ps1 script,
+so there is no need to download anything yourself.
 
 ---
 
@@ -105,7 +92,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 | -t SECONDS | Sleep between downloads | 11 |
 | -f FORMAT | Output format (mp3, mp4, flac, etc.) | mp3 |
 | -q QUALITY | Quality: low, mid, high | mid |
-| -a | Enable archive recovery (Linux only) | Disabled |
+| -a | Enable archive recovery | Disabled |
 | -h | Show help | – |
 
 **Quality Settings:**
@@ -187,15 +174,17 @@ Windows PowerShell:
 
 ---
 
-### 3. Move-Recovered.sh (Linux/macOS only)
+### 3. Move-Recovered.sh
 
 **Purpose:** Processes files in .archive_recovered folder, converts them to the target format.
 
-**Note:** This script is only available on Linux/macOS as archive recovery is not supported on Windows.
-
-**Usage:**
+**Usage (Linux/macOS):**
 ```bash
 ./Move-Recovered.sh [OPTIONS]
+```
+**Usage (Windows PowerShell):**
+```powershell
+.\Move-Recovered.ps1 [OPTIONS]
 ```
 
 | Option | Description | Default |
@@ -206,15 +195,22 @@ Windows PowerShell:
 | -h | Show help | – |
 
 **Examples:**
+Linux/macOS:
 ```bash
 # Convert all recovered files to MP3 (mid quality)
 ./Move-Recovered.sh
 
 # Convert to high quality FLAC
 ./Move-Recovered.sh -f flac -q high
+```
 
-# Convert to medium quality MP4 video
-./Move-Recovered.sh -f mp4 -q mid
+Windows PowerShell:
+```powershell
+# Convert all recovered files to MP3 (mid quality)
+.\Move-Recovered.ps1
+
+# Convert to high quality FLAC
+.\Move-Recovered.ps1 -f flac -q high
 ```
 
 ---
@@ -225,11 +221,9 @@ When scripts run, they create the following hidden files in the output directory
 ```
 OUTPUT_DIR/
 ├── .downloaded_ids.txt          # Successfully downloaded from YouTube
-├── .recovered_ids.txt           # Recovered from archives (Linux only)
 ├── .failed_ids.txt              # Failed (to be retried)
 ├── .permanently_failed_ids.txt  # Permanently unavailable (never retried)
 ├── .playlist_videos.txt         # All video IDs from playlist
-├── .ytdlp_archive.txt           # yt-dlp internal download archive
 ├── .archive_recovered/          # Temporary folder for archive-recovered files (Linux only)
 │   └── (recovered files before processing)
 └── Artist - Song Name.mp3       # Your music files
@@ -240,11 +234,9 @@ OUTPUT_DIR/
 | File                        | Purpose                                      |
 |-----------------------------|----------------------------------------------|
 | .downloaded_ids.txt         | Videos that downloaded successfully from YouTube |
-| .recovered_ids.txt          | Videos recovered from archives (Linux only)  |
 | .failed_ids.txt             | Videos that failed but may succeed later     |
 | .permanently_failed_ids.txt | Videos not on YouTube - NEVER retried        |
 | .playlist_videos.txt        | Complete list of video IDs from playlist     |
-| .ytdlp_archive.txt          | yt-dlp's internal tracking (do not modify)   |
 | .archive_recovered/         | Temporary storage for archive-recovered files|
 
 ---
@@ -257,8 +249,6 @@ OUTPUT_DIR/
    - Future runs will skip all videos in this file automatically
 
 This prevents wasting time on videos that truly don't exist anywhere.
-
-**Note:** On Windows, archive recovery is not available. Videos that fail on YouTube are immediately marked as permanently failed.
 
 ---
 
@@ -330,7 +320,7 @@ Waiting for connection to resume...
 
 ## Complete Workflow Examples
 
-**Linux/macOS (Full Features)**
+**Linux/macOS**
 ```bash
 # First download (overnight, high quality)
 ./Download-Playlist.sh -p "URL" -o "MyPlaylist" -q high -a -t 15
@@ -346,13 +336,16 @@ cd MyPlaylist
 cat .permanently_failed_ids.txt
 ```
 
-**Windows (Basic Features)**
+**Windows**
 ```powershell
 # First download
 .\Download-Playlist.ps1 -p "URL" -o "C:\Music" -q high -t 15
 
 # Retry any failures
 .\Retry-Failed.ps1 -o "C:\Music" -t 5
+
+# Process any recovered files
+.\Move-Recovered.sh -o "C:\Music" -q high
 
 # Check permanently failed videos
 Get-Content C:\Music\.permanently_failed_ids.txt
@@ -391,14 +384,14 @@ Get-Content C:\Music\.permanently_failed_ids.txt
 
 | Feature                    | Linux/macOS (Bash) | Windows (PowerShell) |
 |----------------------------|--------------------|----------------------|
-| Archive recovery (-a)      | ✅ Full support    | ❌ Not available     |
+| Archive recovery (-a)      | ✅ Full support    | ✅ Full support     |
 | Quality selection          | ✅ Full support    | ✅ Full support      |
 | Hidden log files (.)       | ✅ Yes             | ✅ Yes               |
 | Internet disconnection     | ✅ Yes             | ✅ Yes               |
 | Permanent failure tracking | ✅ Yes             | ✅ Yes               |
 | Hyphen ID handling         | ✅ Yes             | ✅ Yes               |
 | yt-dlp integration         | ✅ Full            | ✅ Full              |
-| Move-Recovered script      | ✅ Yes             | ❌ Not needed        |
+| Move-Recovered script      | ✅ Yes             | ✅ Yes        |
 
 For full features on Windows, consider using WSL (Windows Subsystem for Linux) to run the Bash scripts.
 

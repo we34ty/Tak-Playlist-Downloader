@@ -1,4 +1,3 @@
-
 # ========== ARGUMENT PARSING (MUST BE FIRST) ========== 
 param(
 	[string]$o,
@@ -8,18 +7,62 @@ param(
 	[switch]$h
 )
 
-# ========== DEFAULT CONFIGURATION ========== 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# ========== YT-DLP CHECK & AUTO-DOWNLOAD ==========
+$YtDlpExe = Join-Path $ScriptDir 'yt-dlp.exe'
+if (-not (Test-Path $YtDlpExe)) {
+	Write-Host "[!] yt-dlp.exe not found. Downloading latest version..."
+	$ytDlpUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+	try {
+		Invoke-WebRequest -Uri $ytDlpUrl -OutFile $YtDlpExe -UseBasicParsing
+		Write-Host "[OK] yt-dlp.exe downloaded successfully."
+	} catch {
+		Write-Host "ERROR: Failed to download yt-dlp.exe. Please check your internet connection or download manually from $ytDlpUrl"
+		exit 1
+	}
+}
+
+# ========== FFMPEG CHECK & AUTO-DOWNLOAD ==========
+$FfmpegExe = Join-Path $ScriptDir 'ffmpeg.exe'
+if (-not (Test-Path $FfmpegExe)) {
+	Write-Host "[!] ffmpeg.exe not found. Downloading latest static Windows build..."
+	$ffmpegZipUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+	$ffmpegZip = Join-Path $ScriptDir 'ffmpeg-release-essentials.zip'
+	try {
+		Invoke-WebRequest -Uri $ffmpegZipUrl -OutFile $ffmpegZip -UseBasicParsing
+		Write-Host "[OK] ffmpeg zip downloaded. Extracting..."
+		Add-Type -AssemblyName System.IO.Compression.FileSystem
+		[System.IO.Compression.ZipFile]::ExtractToDirectory($ffmpegZip, $ScriptDir)
+		$ffmpegFound = Get-ChildItem -Path $ScriptDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+		if ($ffmpegFound) {
+			Move-Item -Force $ffmpegFound.FullName $FfmpegExe
+			Write-Host "[OK] ffmpeg.exe extracted and moved."
+		} else {
+			Write-Host "ERROR: ffmpeg.exe not found after extraction."
+			exit 1
+		}
+		Remove-Item $ffmpegZip -Force
+		Get-ChildItem -Path $ScriptDir -Directory | Where-Object { $_.Name -like 'ffmpeg-*' } | Remove-Item -Recurse -Force
+	} catch {
+		Write-Host "ERROR: Failed to download or extract ffmpeg."
+		exit 1
+	}
+}
+
+# ========== DEFAULT CONFIGURATION ==========
 $OutputDir = Get-Location
 $SleepInterval = 11
 $Format = 'mp3'
 $Quality = 'mid'
 
-# ========== COLOR CONSTANTS (Write-Host Wrappers) ========== 
-$Red     = { param($msg) Write-Host $msg -ForegroundColor Red }
-$Green   = { param($msg) Write-Host $msg -ForegroundColor Green }
-$Yellow  = { param($msg) Write-Host $msg -ForegroundColor Yellow }
-$Blue    = { param($msg) Write-Host $msg -ForegroundColor Blue }
-$Cyan    = { param($msg) Write-Host $msg -ForegroundColor Cyan }
+# ========== COLOR FUNCTIONS ========== 
+function Write-Red { Write-Host $args -ForegroundColor Red }
+function Write-Green { Write-Host $args -ForegroundColor Green }
+function Write-Yellow { Write-Host $args -ForegroundColor Yellow }
+function Write-Blue { Write-Host $args -ForegroundColor Blue }
+function Write-Cyan { Write-Host $args -ForegroundColor Cyan }
+function Write-Magenta { Write-Host $args -ForegroundColor Magenta }
 
 function Show-Help {
 	Write-Host "Usage: .\Retry-Failed.ps1 [-o <OUTPUT_DIR>] [-t <SECONDS>] [-f <FORMAT>] [-q <QUALITY>] [-h]" -ForegroundColor Cyan
@@ -30,6 +73,10 @@ function Show-Help {
 	Write-Host "  -f <FORMAT>     Output format (default: mp3)"
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "  -h             Show this help message"
+	Write-Host ""
+	Write-Host "Note: This script searches archives (Wayback Machine, GhostArchive, etc.)"
+	Write-Host "      for videos that are no longer available on YouTube."
+	Write-Host "      Videos not found in any archive are marked as permanently failed."
 }
 
 if ($h) { Show-Help; exit 0 }
@@ -39,12 +86,12 @@ if ($f) { $Format = $f }
 if ($q) { $Quality = $q }
 
 if ($Quality -and $Quality -notin @('low','mid','high')) {
-	& $Red "ERROR: Quality must be low, mid, or high"
+	Write-Red "ERROR: Quality must be low, mid, or high"
 	exit 1
 }
 
 if ($SleepInterval -lt 0 -or ($SleepInterval -isnot [int])) {
-	& $Red "ERROR: Sleep interval must be a number"
+	Write-Red "ERROR: Sleep interval must be a number"
 	exit 1
 }
 
@@ -60,15 +107,40 @@ function Test-Internet {
 function Wait-ForInternet {
 	$waitTime = 30
 	$elapsed = 0
-	& $Yellow "No internet connection detected"
-	& $Yellow "Waiting for connection to resume..."
+	Write-Yellow "No internet connection detected"
+	Write-Yellow "Waiting for connection to resume..."
 	while (-not (Test-Internet)) {
 		Start-Sleep -Seconds $waitTime
 		$elapsed += $waitTime
-		& $Blue "  Still waiting... ($elapsed s elapsed)"
+		Write-Blue "  Still waiting... ($elapsed s elapsed)"
 	}
-	& $Green "Internet connection restored! Resuming."
+	Write-Green "Internet connection restored! Resuming."
 	Start-Sleep -Seconds 5
+}
+
+# ========== HELPER FUNCTION TO REMOVE FROM FAILED LOG ==========
+function Remove-FromFailedLog {
+	param([string]$video_id)
+	
+	if (-not (Test-Path $FailedLog)) { return }
+	
+	$content = Get-Content $FailedLog -ErrorAction SilentlyContinue
+	if (-not $content) { return }
+	
+	$newContent = $content | Where-Object { $_ -ne $video_id }
+	
+	# Handle empty content properly
+	if ($newContent -is [array]) {
+		$newContent = $newContent | Where-Object { $_ -ne "" }
+	}
+	
+	# Write back to file (handle empty case)
+	if ($newContent -and $newContent.Count -gt 0) {
+		$newContent | Set-Content $FailedLog -Force
+	} else {
+		# File becomes empty - write an empty string to clear it
+		"" | Set-Content $FailedLog -Force
+	}
 }
 
 # ========== FORMAT & QUALITY ==========
@@ -78,13 +150,13 @@ $FormatLower = $Format.ToLower()
 if ($AudioFormats -contains $FormatLower) {
 	$DownloadType = 'audio'
 	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
-	& $Blue "Format: $FormatLower (audio only)"
+	Write-Blue "Format: $FormatLower (audio only)"
 } elseif ($VideoFormats -contains $FormatLower) {
 	$DownloadType = 'video'
 	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
-	& $Blue "Format: $FormatLower (video + audio)"
+	Write-Blue "Format: $FormatLower (video + audio)"
 } else {
-	& $Red "ERROR: Unsupported format '$Format'"
+	Write-Red "ERROR: Unsupported format '$Format'"
 	exit 1
 }
 
@@ -109,89 +181,280 @@ switch ($FormatLower) {
 
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
-Set-Location $OutputDir
+Push-Location $OutputDir
 
 # ========== LOG FILES ==========
 $DownloadedLog = ".downloaded_ids.txt"
 $FailedLog = ".failed_ids.txt"
 $PermanentlyFailedLog = ".permanently_failed_ids.txt"
-foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog)) { if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } }
+$ArchiveDir = ".archive_recovered"
+foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog)) { 
+	if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } 
+}
+if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
+
+# ========== ARCHIVE SEARCH FUNCTIONS ==========
+
+# Function to extract title and author from HTML
+function Extract-Metadata {
+	param([string]$html)
+	
+	$title = ""
+	$author = ""
+	
+	# Try to extract title
+	if ($html -match '<title>(.*?)</title>') {
+		$title = $matches[1] -replace ' - YouTube', '' -replace ' - GhostArchive', ''
+	}
+	if (-not $title -and $html -match '<meta property="og:title" content="([^"]+)"') {
+		$title = $matches[1]
+	}
+	if (-not $title -and $html -match '"title":"([^"]+)"') {
+		$title = $matches[1] -replace '\\u0026', '&'
+	}
+	
+	# Try to extract author
+	if ($html -match '"ownerChannelName":"([^"]+)"') {
+		$author = $matches[1]
+	}
+	if (-not $author -and $html -match '"author":"([^"]+)"') {
+		$author = $matches[1]
+	}
+	if (-not $author -and $html -match '<link itemprop="name" content="([^"]+)"') {
+		$author = $matches[1]
+	}
+	
+	# Clean up
+	$title = $title -replace '^[\s-]+|[\s-]+$', ''
+	$author = $author -replace '^[\s-]+|[\s-]+$', ''
+	
+	return @{ Title = $title; Author = $author }
+}
+
+# Function to search for a video in archives
+function Search-Archive {
+	param([string]$video_id)
+	
+	Write-Blue "  -> Searching archives for $video_id..."
+	
+	# Try 1: GhostArchive
+	try {
+		$ghostUrl = "https://ghostarchive.org/varchive/youtube/$video_id"
+		$response = Invoke-WebRequest -Uri $ghostUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
+		if ($response.StatusCode -eq 200) {
+			Write-Blue "     Found on GhostArchive, downloading..."
+			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
+			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $ghostUrl 2>$null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Green "     Download successful from GhostArchive"
+				return $true
+			}
+		}
+	} catch { Write-Debug "GhostArchive check failed" }
+	
+	# Try 2: Archive.org direct
+	try {
+		$archiveUrl = "https://archive.org/details/youtube-$video_id"
+		$response = Invoke-WebRequest -Uri $archiveUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
+		if ($response.StatusCode -eq 200) {
+			Write-Blue "     Found on Archive.org, downloading best format..."
+			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
+			& $YtDlpExe --no-warnings --no-playlist -f "bestvideo+bestaudio/best" --output $outputFile $archiveUrl 2>$null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Green "     Download successful from Archive.org"
+				return $true
+			}
+		}
+	} catch { Write-Debug "Archive.org check failed" }
+	
+	# Try 3: Wayback Machine
+	try {
+		$waybackApi = "https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id"
+		$response = Invoke-WebRequest -Uri $waybackApi -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
+		$content = $response.Content
+		
+		if ($content -match '"timestamp":"([0-9]+)"') {
+			$timestamp = $matches[1]
+			Write-Blue "     Found Wayback capture from $timestamp, attempting download..."
+			$embedUrl = "https://web.archive.org/web/${timestamp}if_/https://www.youtube.com/embed/$video_id"
+			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
+			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $embedUrl 2>$null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Green "     Download successful from Wayback Machine"
+				return $true
+			}
+		}
+	} catch { Write-Debug "Wayback Machine check failed" }
+	
+	# Try 4: Hobune.stream
+	try {
+		$hobuneUrl = "https://hobune.stream/yt/${video_id}.mp4"
+		$response = Invoke-WebRequest -Uri $hobuneUrl -Method Head -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
+		if ($response.StatusCode -eq 200) {
+			Write-Blue "     Found on Hobune.stream, downloading..."
+			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
+			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $hobuneUrl 2>$null
+			if ($LASTEXITCODE -eq 0) {
+				Write-Green "     Download successful from Hobune.stream"
+				return $true
+			}
+		}
+	} catch { Write-Debug "Hobune.stream check failed" }
+	
+	Write-Red "     Not found in any archive"
+	return $false
+}
 
 # ========== MAIN RETRY LOOP ==========
-& $Green "========================================="
-& $Green "Retry Failed Downloads"
-& $Green "========================================="
+Write-Green "========================================="
+Write-Green "Retry Failed Downloads with Archive Search"
+Write-Green "========================================="
 Write-Host "Output directory: $OutputDir"
 Write-Host "Format: $FormatLower ($DownloadType)"
 Write-Host "Quality: $Quality"
 Write-Host "Delay between retries: ${SleepInterval}s"
 Write-Host ""
 
-if (-not (Test-Path $FailedLog) -or -not (Get-Content $FailedLog | Where-Object { $_.Trim() })) {
-	& $Yellow "No .failed_ids.txt found or it's empty. Nothing to retry."
+if (-not (Test-Path $FailedLog) -or (Get-Content $FailedLog | Where-Object { $_.Trim() } | Measure-Object).Count -eq 0) {
+	Write-Yellow "No .failed_ids.txt found or it's empty. Nothing to retry."
 	exit 1
 }
 
 if (-not (Test-Internet)) { Wait-ForInternet }
 
-# Filter out permanently failed and already downloaded
+# Filter out already downloaded or permanently failed videos
 $RetryList = @()
+$PermanentlyFailedCount = 0
 foreach ($video_id in Get-Content $FailedLog | Where-Object { $_.Trim() }) {
-	if (Select-String -Path $PermanentlyFailedLog -Pattern "^$video_id$" -Quiet) { continue }
-	if (Select-String -Path $DownloadedLog -Pattern "^$video_id$" -Quiet) { continue }
+	if (Select-String -Path $DownloadedLog -Pattern "^$video_id$" -Quiet) { 
+		continue 
+	}
+	if (Select-String -Path $PermanentlyFailedLog -Pattern "^$video_id$" -Quiet) { 
+		$PermanentlyFailedCount++
+		continue 
+	}
 	$RetryList += $video_id
 }
+
 $Total = $RetryList.Count
 if ($Total -eq 0) {
-	& $Green "All failed videos have been recovered or marked permanently failed!"
+	if ($PermanentlyFailedCount -gt 0) {
+		Write-Green "All failed videos have been downloaded or marked permanently failed!"
+		Write-Yellow "Skipped $PermanentlyFailedCount permanently failed videos"
+	} else {
+		Write-Green "All failed videos have been downloaded!"
+	}
 	exit 0
 }
 
-& $Cyan "Videos to retry: $Total"
+Write-Cyan "Videos to retry: $Total"
+if ($PermanentlyFailedCount -gt 0) {
+	Write-Yellow "Permanently failed (skipped): $PermanentlyFailedCount"
+}
 Write-Host ""
 
 $Current = 0
 $Success = 0
-$StillFailed = 0
+$Recovered = 0
+$PermanentlyFailed = 0
 
 foreach ($video_id in $RetryList) {
 	$Current++
 	Write-Host ""
-	& $Yellow "[$Current/$Total] RETRYING: $video_id"
+	Write-Yellow "[$Current/$Total] RETRYING: $video_id"
+	
 	if (-not (Test-Internet)) { Wait-ForInternet }
-	& $Blue "  -> Trying YouTube..."
+	
+	# First try YouTube
+	Write-Blue "  -> Trying YouTube..."
+	
 	$ytDlpArgsArr = @(
 		'--cookies-from-browser', 'firefox',
 		'--extractor-args', 'youtubetab:skip=authcheck'
 	)
 	$ytDlpArgsArr += $YtdlpArgs -split ' '
 	$ytDlpArgsArr += '--embed-thumbnail', '--add-metadata', '--output', $OutputTemplate, '--no-overwrites', '--continue', "https://youtube.com/watch?v=$video_id"
-	& $YtDlpExe @ytDlpArgsArr
-	if ($LASTEXITCODE -eq 0) {
-		& $Green "  Downloaded successfully"
+	
+	try {
+		& $YtDlpExe @ytDlpArgsArr 2>&1 | Out-Null
+		$exitCode = $LASTEXITCODE
+	} catch {
+		$exitCode = 1
+	}
+	
+	if ($exitCode -eq 0) {
+		Write-Green "  Downloaded successfully from YouTube"
 		Add-Content $DownloadedLog $video_id
-		# Remove from failed
-		(Get-Content $FailedLog | Where-Object { $_ -ne $video_id }) | Set-Content $FailedLog
+		Remove-FromFailedLog -video_id $video_id
 		$Success++
 	} else {
-		& $Red "  Still unavailable on YouTube"
-		& $Yellow "  -> Marked as permanently failed"
-		Add-Content $PermanentlyFailedLog $video_id
-		(Get-Content $FailedLog | Where-Object { $_ -ne $video_id }) | Set-Content $FailedLog
-		$StillFailed++
+		Write-Red "  Still unavailable on YouTube"
+		
+		# Try archive recovery
+		Write-Blue "  -> Attempting archive recovery..."
+		if (Search-Archive -video_id $video_id) {
+			Write-Green "  Recovered from archive!"
+			Add-Content $DownloadedLog $video_id
+			Remove-FromFailedLog -video_id $video_id
+			$Recovered++
+		} else {
+			Write-Red "  Not found in any archive"
+			Write-Yellow "  -> Marked as permanently failed"
+			Add-Content $PermanentlyFailedLog $video_id
+			Remove-FromFailedLog -video_id $video_id
+			$PermanentlyFailed++
+		}
 	}
+	
 	if ($Current -lt $Total) {
-		& $Blue "  Waiting ${SleepInterval}s..."
+		Write-Blue "  Waiting ${SleepInterval}s..."
 		Start-Sleep -Seconds $SleepInterval
+	}
+}
+
+# ========== PROCESS RECOVERED FILES ==========
+if (Test-Path $ArchiveDir) {
+	$recoveredFiles = Get-ChildItem -Path $ArchiveDir -File
+	if ($recoveredFiles.Count -gt 0) {
+		Write-Host ""
+		Write-Blue "Processing recovered files..."
+		foreach ($file in $recoveredFiles) {
+			$filename = $file.Name
+			$extension = $file.Extension.TrimStart('.').ToLower()
+			$nameWithoutExt = $file.BaseName
+			
+			if ($extension -eq $FormatLower) {
+				Move-Item -Path $file.FullName -Destination $OutputDir -Force
+				Write-Green "  Moved: $filename"
+			} elseif ($DownloadType -eq 'audio') {
+				$tempFile = Join-Path $OutputDir "$nameWithoutExt.$FormatLower"
+				& $FfmpegExe -i $file.FullName -vn -ar 44100 -ac 2 -b:a 192k $tempFile -y 2>$null
+				if ($LASTEXITCODE -eq 0) {
+					Remove-Item $file.FullName -Force
+					Write-Green "  Converted to $FormatLower : $nameWithoutExt.$FormatLower"
+				}
+			}
+		}
+		Remove-Item $ArchiveDir -Force -ErrorAction SilentlyContinue
 	}
 }
 
 # ========== SUMMARY ==========
 Write-Host ""
-& $Green "========================================="
-& $Green "RETRY COMPLETE"
-& $Green "========================================="
-& $Green "Downloaded from YouTube: $Success"
-& $Red "Permanently failed: $StillFailed"
+Write-Green "========================================="
+Write-Green "RETRY COMPLETE"
+Write-Green "========================================="
+Write-Green "Downloaded from YouTube: $Success"
+Write-Green "Recovered from archives: $Recovered"
+Write-Yellow "Permanently failed: $PermanentlyFailed"
 Write-Host ""
-Write-Host "Permanently failed videos saved to: $PermanentlyFailedLog"
+Write-Host "Downloaded log: $DownloadedLog"
+Write-Host "Failed log: $FailedLog"
+Write-Host "Permanently failed log: $PermanentlyFailedLog"
+if ($PermanentlyFailed -gt 0) {
+	Write-Host ""
+	Write-Yellow "Videos marked as permanently failed will NOT be retried again."
+	Write-Yellow "To retry them anyway, remove their IDs from $PermanentlyFailedLog"
+}
+
+Pop-Location
