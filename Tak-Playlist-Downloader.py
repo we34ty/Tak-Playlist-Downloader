@@ -20,6 +20,7 @@ import schedule
 import uuid
 from queue import Queue
 import atexit
+import getpass
 
 # Try to import pystray for system tray support
 PYSTRAY_AVAILABLE = False
@@ -123,6 +124,9 @@ class YouTubeDownloaderGUI:
         self.root.minsize(900, 700)
         self.root.resizable(True, True)
         
+        # Check for --minimized argument
+        start_minimized = '--minimized' in sys.argv
+        
         # System tray variables
         self.tray_icon = None
         self.minimized_to_tray = False
@@ -134,6 +138,13 @@ class YouTubeDownloaderGUI:
         self.tasks = {}
         self.task_queue = Queue()
         self.current_process = None
+        
+        # Dark mode variable
+        self.dark_mode = tk.BooleanVar(value=False)
+
+        windows_theme = self.get_windows_theme()
+        if windows_theme is not None:
+            self.dark_mode.set(windows_theme)
         
         # Detect OS and set script extension
         self.os_type = platform.system()
@@ -169,8 +180,11 @@ class YouTubeDownloaderGUI:
         # Set up the UI
         self.setup_ui()
         
-        # Load saved settings
+        # Apply dark mode if saved
         self.load_settings()
+        if self.dark_mode.get():
+            self.toggle_dark_mode()
+        
         self.load_tasks()
         
         # Bind window events - THIS IS THE CRITICAL FIX
@@ -188,6 +202,10 @@ class YouTubeDownloaderGUI:
         
         # Register cleanup on exit
         atexit.register(self.cleanup)
+        
+        # If start_minimized, minimize to tray
+        if start_minimized and self.tray_enabled:
+            self.root.after(100, self.minimize_to_tray)
     
     def get_config_dir(self):
         """Get the user's config directory for storing settings"""
@@ -200,113 +218,428 @@ class YouTubeDownloaderGUI:
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
     
-    def setup_tray(self):
-        """Setup system tray icon and menu"""
-        if not PYSTRAY_AVAILABLE:
-            return
+    def get_autostart_path(self):
+        """Get the path to the autostart file/folder based on OS"""
+        if self.os_type == "Windows":
+            return Path(os.environ.get('APPDATA', Path.home() / 'AppData/Roaming')) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs' / 'Startup'
+        else:
+            return Path.home() / '.config' / 'autostart'
+    
+    def get_executable_path(self):
+        """Get the path to the current executable/script"""
+        if getattr(sys, 'frozen', False):
+            return Path(sys.executable)
+        else:
+            return Path(sys.argv[0]).absolute()
+    
+    def is_autostart_enabled(self):
+        """Check if autostart is currently enabled"""
+        if self.os_type == "Windows":
+            startup_folder = self.get_autostart_path()
+            shortcut_path = startup_folder / "TakPlaylistDownloader.lnk"
+            bat_path = startup_folder / "TakPlaylistDownloader.bat"
+            return shortcut_path.exists() or bat_path.exists()
+        else:
+            autostart_file = self.get_autostart_path() / "tak-playlist-downloader.desktop"
+            return autostart_file.exists()
+    
+    def create_windows_autostart(self):
+        """Create Windows shortcut for autostart"""
+        try:
+            startup_folder = self.get_autostart_path()
+            startup_folder.mkdir(parents=True, exist_ok=True)
+            
+            exe_path = self.get_executable_path()
+            
+            # Create a batch file
+            bat_path = startup_folder / "TakPlaylistDownloader.bat"
+            with open(bat_path, 'w') as f:
+                f.write(f'@echo off\ncd /d "{exe_path.parent}"\n"{exe_path}" --minimized\n')
+            return True
+        except Exception as e:
+            print(f"Failed to create Windows autostart: {e}")
+            return False
+    
+    def create_linux_autostart(self):
+        """Create Linux desktop file for autostart"""
+        try:
+            autostart_dir = self.get_autostart_path()
+            autostart_dir.mkdir(parents=True, exist_ok=True)
+            
+            desktop_file = autostart_dir / "tak-playlist-downloader.desktop"
+            exe_path = self.get_executable_path()
+            
+            if getattr(sys, 'frozen', False):
+                command = f'"{exe_path}" --minimized'
+            else:
+                command = f'python3 "{exe_path}" --minimized'
+            
+            desktop_content = f"""[Desktop Entry]
+Type=Application
+Name=Tak Playlist Downloader
+Comment=Download YouTube playlists
+Exec={command}
+Icon=applications-multimedia
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+Categories=AudioVideo;Network;
+"""
+            with open(desktop_file, 'w') as f:
+                f.write(desktop_content)
+            
+            os.chmod(desktop_file, 0o755)
+            return True
+        except Exception as e:
+            print(f"Failed to create Linux autostart: {e}")
+            return False
+    
+    def remove_windows_autostart(self):
+        """Remove Windows autostart shortcut"""
+        try:
+            startup_folder = self.get_autostart_path()
+            shortcut_path = startup_folder / "TakPlaylistDownloader.lnk"
+            bat_path = startup_folder / "TakPlaylistDownloader.bat"
+            
+            if shortcut_path.exists():
+                shortcut_path.unlink()
+            if bat_path.exists():
+                bat_path.unlink()
+            return True
+        except Exception as e:
+            print(f"Failed to remove Windows autostart: {e}")
+            return False
+    
+    def remove_linux_autostart(self):
+        """Remove Linux autostart desktop file"""
+        try:
+            autostart_file = self.get_autostart_path() / "tak-playlist-downloader.desktop"
+            if autostart_file.exists():
+                autostart_file.unlink()
+            return True
+        except Exception as e:
+            print(f"Failed to remove Linux autostart: {e}")
+            return False
+    
+    def toggle_autostart(self):
+        """Enable or disable autostart based on checkbox"""
+        if self.autostart_var.get():
+            if self.os_type == "Windows":
+                success = self.create_windows_autostart()
+            else:
+                success = self.create_linux_autostart()
+            
+            if success:
+                messagebox.showinfo("Autostart Enabled", 
+                    "Tak Playlist Downloader will start automatically when your computer starts.\n\nThe app will start minimized to the system tray.")
+            else:
+                messagebox.showerror("Error", "Failed to enable autostart. Please check permissions.")
+                self.autostart_var.set(False)
+        else:
+            if self.os_type == "Windows":
+                success = self.remove_windows_autostart()
+            else:
+                success = self.remove_linux_autostart()
+            
+            if success:
+                messagebox.showinfo("Autostart Disabled", "Autostart has been disabled.")
+            else:
+                messagebox.showerror("Error", "Failed to disable autostart.")
+    
+    def setup_styles(self):
+        """Setup ttk styles for the application based on dark mode setting"""
+        self.style = ttk.Style()
+        
+        if self.dark_mode.get():
+            # Dark mode colors
+            bg = "#2d2d2d"
+            fg = "#ffffff"
+            select_bg = "#0d7377"      # Teal for selection (stands out)
+            select_fg = "#ffffff"       # White text on selection
+            hover_bg = "#404040"        # Slightly lighter for hover
+            entry_bg = "#3c3c3c"
+            button_bg = "#4a4a4a"
+            active_bg = "#5a5a5a"
+            trough_bg = "#1e1e1e"
+            # Running button colors (green)
+            running_bg = "#1a5d1a"
+            running_hover = "#2a7a2a"
+            # Disabled button colors
+            disabled_bg = "#3a3a3a"
+            disabled_fg = "#6a6a6a"
+        else:
+            # Light mode colors
+            bg = "#f0f0f0"
+            fg = "#000000"
+            select_bg = "#0078d4"       # Blue selection
+            select_fg = "#ffffff"
+            hover_bg = "#e0e0e0"
+            entry_bg = "#ffffff"
+            button_bg = "#e0e0e0"
+            active_bg = "#c0c0c0"
+            trough_bg = "#d0d0d0"
+            # Running button colors (green)
+            running_bg = "#28a828"
+            running_hover = "#34c934"
+            # Disabled button colors
+            disabled_bg = "#d0d0d0"
+            disabled_fg = "#888888"
+        
+        # Configure root window background
+        self.root.configure(bg=bg)
+        
+        # ========== FRAME STYLES ==========
+        self.style.configure("TFrame", background=bg)
+        self.style.configure("TLabel", background=bg, foreground=fg)
+        self.style.configure("TLabelframe", background=bg, foreground=fg)
+        self.style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        
+        # ========== BUTTON STYLES ==========
+        self.style.configure("TButton", 
+            background=button_bg, 
+            foreground=fg, 
+            borderwidth=1,
+            padding=4,
+            font=('TkDefaultFont', 9)
+        )
+        self.style.map("TButton",
+            background=[("active", hover_bg), ("pressed", select_bg)],
+            foreground=[("active", fg), ("pressed", select_fg)],
+            relief=[("pressed", "sunken")]
+        )
+        
+        # ========== SCHEDULER RUNNING BUTTON STYLE ==========
+        self.style.configure("Running.TButton",
+            background=running_bg,
+            foreground="#ffffff",
+            borderwidth=1,
+            padding=4,
+            font=('TkDefaultFont', 9, 'bold')
+        )
+        self.style.map("Running.TButton",
+            background=[("active", running_hover), ("pressed", select_bg)],
+            foreground=[("active", "#ffffff"), ("pressed", select_fg)],
+            relief=[("pressed", "sunken")]
+        )
+        
+        # ========== DISABLED BUTTON STYLE ==========
+        self.style.configure("Disabled.TButton",
+            background=disabled_bg,
+            foreground=disabled_fg,
+            borderwidth=1,
+            padding=4
+        )
+        
+        # ========== ENTRY STYLES ==========
+        self.style.configure("TEntry", 
+            fieldbackground=entry_bg, 
+            foreground=fg,
+            padding=2
+        )
+        self.style.map("TEntry",
+            fieldbackground=[("focus", entry_bg), ("readonly", entry_bg)],
+            foreground=[("focus", fg)],
+            bordercolor=[("focus", select_bg)]
+        )
+        
+        # ========== COMBOBOX STYLES ==========
+        self.style.configure("TCombobox", 
+            fieldbackground=entry_bg, 
+            foreground=fg,
+            padding=2
+        )
+        self.style.map("TCombobox",
+            fieldbackground=[("readonly", entry_bg)],
+            foreground=[("readonly", fg)],
+            selectbackground=[("readonly", select_bg)],
+            selectforeground=[("readonly", select_fg)]
+        )
+        
+        # ========== NOTEBOOK (TABS) STYLES ==========
+        self.style.configure("TNotebook", 
+            background=bg, 
+            borderwidth=0,
+            tabmargins=[0, 0, 0, 0]
+        )
+        self.style.configure("TNotebook.Tab", 
+            background=button_bg, 
+            foreground=fg, 
+            padding=[12, 4],
+            font=('TkDefaultFont', 9)
+        )
+        self.style.map("TNotebook.Tab",
+            background=[("selected", select_bg), ("active", hover_bg)],
+            foreground=[("selected", select_fg), ("active", fg)]
+        )
+        
+        # ========== CHECKBUTTON STYLES ==========
+        self.style.configure("TCheckbutton", 
+            background=bg, 
+            foreground=fg,
+            padding=2
+        )
+        self.style.map("TCheckbutton",
+            background=[("active", bg)],
+            foreground=[("active", fg)],
+            indicatorcolor=[("selected", select_bg)]
+        )
+        
+        # ========== PROGRESSBAR STYLES ==========
+        self.style.configure("TProgressbar", 
+            background=select_bg, 
+            troughcolor=trough_bg, 
+            borderwidth=0
+        )
+        
+        # ========== SCROLLBAR STYLES ==========
+        self.style.configure("Vertical.TScrollbar", 
+            background=button_bg, 
+            troughcolor=trough_bg,
+            arrowcolor=fg,
+            borderwidth=0
+        )
+        self.style.configure("Horizontal.TScrollbar", 
+            background=button_bg, 
+            troughcolor=trough_bg,
+            arrowcolor=fg,
+            borderwidth=0
+        )
+        self.style.map("Vertical.TScrollbar",
+            background=[("active", hover_bg), ("pressed", select_bg)]
+        )
+        self.style.map("Horizontal.TScrollbar",
+            background=[("active", hover_bg), ("pressed", select_bg)]
+        )
+        
+        # ========== TREEVIEW (for future use) ==========
+        self.style.configure("Treeview",
+            background=entry_bg,
+            foreground=fg,
+            fieldbackground=entry_bg,
+            rowheight=24
+        )
+        self.style.map("Treeview",
+            background=[("selected", select_bg)],
+            foreground=[("selected", select_fg)]
+        )
+        
+        # ========== TK WIDGETS (not ttk) ==========
+        # Listbox (for task list)
+        if hasattr(self, 'task_listbox') and self.task_listbox:
+            self.task_listbox.configure(
+                bg=entry_bg,
+                fg=fg,
+                selectbackground=select_bg,
+                selectforeground=select_fg,
+                activestyle="none",
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=0,
+                font=('TkDefaultFont', 9)
+            )
+        
+        # ScrolledText widgets
+        for widget in [self.download_status, self.retry_status, self.move_status, 
+                    self.details_text, self.task_logs]:
+            if widget:
+                widget.configure(
+                    bg=entry_bg,
+                    fg=fg,
+                    insertbackground=fg,  # Cursor color
+                    selectbackground=select_bg,
+                    selectforeground=select_fg,
+                    relief="flat",
+                    borderwidth=0,
+                    highlightthickness=0,
+                    font=('TkDefaultFont', 9),
+                    wrap=tk.WORD
+                )
+        
+        # ========== APPLY FRAME STYLES TO ALL TABS ==========
+        for tab in [self.download_tab, self.retry_tab, self.move_tab, 
+                    self.scheduler_tab, self.settings_tab]:
+            if tab:
+                tab.configure(style="TFrame")
+        
+        # ========== UPDATE SCHEDULER BUTTONS IF THEY EXIST ==========
+        if hasattr(self, 'start_scheduler_btn') and self.start_scheduler_btn:
+            if self.scheduler_running:
+                self.start_scheduler_btn.configure(style="Running.TButton")
+                self.stop_scheduler_btn.configure(style="TButton")
+            else:
+                self.start_scheduler_btn.configure(style="TButton")
+                self.stop_scheduler_btn.configure(style="Disabled.TButton")
+        
+        # Force update of all widgets
+        self.root.update_idletasks()
+
+    def toggle_dark_mode(self):
+        """Toggle dark mode for the application"""
+        # Update the style
+        self.setup_styles()
+        
+        # Force refresh of the task list if it exists
+        if hasattr(self, 'task_listbox') and self.task_listbox:
+            # Save current selection
+            current_selection = self.task_listbox.curselection()
+            # Refresh the listbox to apply new colors
+            items = self.task_listbox.get(0, tk.END)
+            self.task_listbox.delete(0, tk.END)
+            for item in items:
+                self.task_listbox.insert(tk.END, item)
+            # Restore selection
+            if current_selection:
+                self.task_listbox.selection_set(current_selection[0])
+        
+        # Save the setting
+        self.save_settings()
+
+    def get_windows_theme(self):
+        """Detect Windows dark mode setting (Windows 10/11)"""
+        if self.os_type != "Windows":
+            return None
         
         try:
-            def create_icon_image():
-                width = 64
-                height = 64
-                image = Image.new('RGB', (width, height), (33, 150, 243))
-                draw = ImageDraw.Draw(image)
-                points = [(24, 16), (24, 48), (48, 32)]
-                draw.polygon(points, fill=(255, 255, 255))
-                return image
-            
-            def on_show():
-                self.root.after(0, self.restore_from_tray)
-            
-            def on_quit():
-                self.root.after(0, self.quit_application)
-            
-            self.tray_icon = pystray.Icon(
-                "tak_downloader",
-                create_icon_image(),
-                "Tak Playlist Downloader",
-                menu=pystray.Menu(
-                    pystray.MenuItem("Show", on_show, default=True),
-                    pystray.MenuItem("Quit", on_quit)
-                )
-            )
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            return value == 0  # 0 = dark mode, 1 = light mode
+        except:
+            return None
+    
+    def apply_dark_mode_to_widget(self, widget, bg, fg, select_bg, entry_bg, button_bg):
+        """Recursively apply dark mode colors to widgets"""
+        try:
+            if isinstance(widget, ttk.Frame):
+                widget.configure(style="TFrame")
+            elif isinstance(widget, ttk.Label):
+                widget.configure(style="TLabel")
+            elif isinstance(widget, ttk.LabelFrame):
+                widget.configure(style="TLabelframe")
+            elif isinstance(widget, ttk.Button):
+                widget.configure(style="TButton")
+            elif isinstance(widget, ttk.Entry):
+                widget.configure(style="TEntry")
+            elif isinstance(widget, ttk.Combobox):
+                widget.configure(style="TCombobox")
+            elif isinstance(widget, ttk.Checkbutton):
+                widget.configure(style="TCheckbutton")
+            elif isinstance(widget, ttk.Notebook):
+                widget.configure(style="TNotebook")
+            elif isinstance(widget, tk.Text):
+                widget.configure(bg=entry_bg, fg=fg, insertbackground=fg)
+            elif isinstance(widget, tk.Listbox):
+                widget.configure(bg=entry_bg, fg=fg, selectbackground=select_bg)
+            elif isinstance(widget, tk.Frame):
+                widget.configure(bg=bg)
         except Exception as e:
-            print(f"Warning: Could not create tray icon: {e}")
-            self.tray_icon = None
-    
-    def minimize_to_tray(self):
-        """Minimize the application to system tray"""
-        if not PYSTRAY_AVAILABLE or not self.tray_icon:
-            self.root.iconify()
-            return
+            pass  # Ignore widgets that don't support these options
         
-        if self.minimized_to_tray:
-            return
-        
-        self.minimized_to_tray = True
-        self.root.withdraw()
-        
-        if self.tray_icon and not getattr(self.tray_icon, '_running', False):
-            def run_tray():
-                try:
-                    self.tray_icon.run()
-                except Exception as e:
-                    print(f"Tray icon error: {e}")
-            
-            self.tray_thread = threading.Thread(target=run_tray, daemon=True)
-            self.tray_thread.start()
-    
-    def restore_from_tray(self):
-        """Restore the application from system tray"""
-        self.minimized_to_tray = False
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except Exception:
-                pass
-            self.tray_icon = None
-            self.root.after(100, self.setup_tray)
-    
-    def quit_application(self):
-        """Properly quit the application"""
-        self.minimized_to_tray = False
-        self.save_settings()
-        self.save_tasks()
-        self.scheduler_running = False
-        
-        # Kill any running processes
-        for task_id, task in self.tasks.items():
-            if task.running and task.process:
-                try:
-                    task.process.terminate()
-                except:
-                    pass
-        
-        # Stop the tray icon if running
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except:
-                pass
-        
-        # Quit the application
-        self.root.quit()
-        self.root.destroy()
-        sys.exit(0)
-    
-    def cleanup(self):
-        """Clean up running processes on exit"""
-        self.scheduler_running = False
-        for task_id, task in self.tasks.items():
-            if task.running and task.process:
-                try:
-                    task.process.terminate()
-                except:
-                    pass
+        # Recursively apply to children
+        for child in widget.winfo_children():
+            self.apply_dark_mode_to_widget(child, bg, fg, select_bg, entry_bg, button_bg)
     
     def setup_ui(self):
         """Setup the entire user interface"""
@@ -613,9 +946,27 @@ class YouTubeDownloaderGUI:
         
         ttk.Separator(main_frame, orient='horizontal').grid(row=1, column=0, columnspan=3, sticky=tk.W+tk.E, pady=10)
         
+        # Autostart frame
+        autostart_frame = ttk.LabelFrame(main_frame, text="Autostart", padding="10")
+        autostart_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        
+        self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
+        ttk.Checkbutton(autostart_frame, text="Start Tak Playlist Downloader automatically when computer starts",
+                        variable=self.autostart_var, command=self.toggle_autostart).pack(anchor=tk.W, pady=5)
+        
+        ttk.Label(autostart_frame, text="Note: The app will start minimized to system tray (Windows) or in background (Linux)",
+                  foreground="gray").pack(anchor=tk.W, pady=2)
+        
+        # Dark mode frame
+        darkmode_frame = ttk.LabelFrame(main_frame, text="Appearance", padding="10")
+        darkmode_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        
+        ttk.Checkbutton(darkmode_frame, text="Dark Mode", variable=self.dark_mode,
+                        command=self.toggle_dark_mode).pack(anchor=tk.W, pady=5)
+        
         # System tray info
         tray_frame = ttk.LabelFrame(main_frame, text="System Tray", padding="10")
-        tray_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        tray_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         if PYSTRAY_AVAILABLE:
             ttk.Label(tray_frame, text="✓ System tray support enabled", foreground="green").pack(anchor=tk.W, pady=2)
@@ -628,7 +979,7 @@ class YouTubeDownloaderGUI:
         
         # Config location info
         info_frame = ttk.LabelFrame(main_frame, text="Configuration", padding="10")
-        info_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        info_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         ttk.Label(info_frame, text=f"Settings saved to: {self.settings_file}").pack(anchor=tk.W, pady=2)
         ttk.Label(info_frame, text="Settings are automatically saved when you change any field").pack(anchor=tk.W, pady=2)
@@ -636,7 +987,7 @@ class YouTubeDownloaderGUI:
         
         # System info
         sys_frame = ttk.LabelFrame(main_frame, text="System Information", padding="10")
-        sys_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        sys_frame.grid(row=6, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         ttk.Label(sys_frame, text=f"Operating System: {self.os_type}").pack(anchor=tk.W, pady=2)
         ttk.Label(sys_frame, text=f"Script Extension: {self.script_ext}").pack(anchor=tk.W, pady=2)
@@ -644,7 +995,7 @@ class YouTubeDownloaderGUI:
         
         # About
         about_frame = ttk.LabelFrame(main_frame, text="About", padding="10")
-        about_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        about_frame.grid(row=7, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         about_text = """Tak Playlist Downloader
 A cross-platform graphical interface for downloading YouTube playlists.
@@ -656,6 +1007,8 @@ Features:
 - Convert recovered files
 - Schedule multiple automatic downloads
 - Settings automatically saved
+- Dark mode support
+- Autostart support
 - System tray support
 - All logs stored in '.TakData' subfolder
 
@@ -667,6 +1020,132 @@ Scripts required in the same directory:
         about_label = ttk.Label(about_frame, text=about_text, justify=tk.LEFT)
         about_label.pack(anchor=tk.W, pady=5)
     
+    def setup_tray(self):
+        """Setup system tray icon and menu"""
+        if not PYSTRAY_AVAILABLE:
+            return
+        
+        try:
+            def create_icon_image():
+                width = 64
+                height = 64
+                # Use different colors based on dark mode
+                if self.dark_mode.get():
+                    bg_color = (33, 33, 33)
+                else:
+                    bg_color = (33, 150, 243)
+                image = Image.new('RGB', (width, height), bg_color)
+                draw = ImageDraw.Draw(image)
+                points = [(24, 16), (24, 48), (48, 32)]
+                draw.polygon(points, fill=(255, 255, 255))
+                return image
+            
+            def on_show():
+                self.root.after(0, self.restore_from_tray)
+            
+            def on_quit():
+                self.root.after(0, self.quit_application)
+            
+            self.tray_icon = pystray.Icon(
+                "tak_downloader",
+                create_icon_image(),
+                "Tak Playlist Downloader",
+                menu=pystray.Menu(
+                    pystray.MenuItem("Show", on_show, default=True),
+                    pystray.MenuItem("Quit", on_quit)
+                )
+            )
+        except Exception as e:
+            print(f"Warning: Could not create tray icon: {e}")
+            self.tray_icon = None
+    
+    def minimize_to_tray(self):
+        """Minimize the application to system tray"""
+        if not PYSTRAY_AVAILABLE or not self.tray_icon:
+            self.root.iconify()
+            return
+        
+        if self.minimized_to_tray:
+            return
+        
+        self.minimized_to_tray = True
+        self.root.withdraw()
+        
+        if self.tray_icon and not getattr(self.tray_icon, '_running', False):
+            def run_tray():
+                try:
+                    self.tray_icon.run()
+                except Exception as e:
+                    print(f"Tray icon error: {e}")
+            
+            self.tray_thread = threading.Thread(target=run_tray, daemon=True)
+            self.tray_thread.start()
+    
+    def restore_from_tray(self):
+        """Restore the application from system tray"""
+        self.minimized_to_tray = False
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+            self.tray_icon = None
+            self.root.after(100, self.setup_tray)
+    
+    def quit_application(self):
+        """Properly quit the application"""
+        self.minimized_to_tray = False
+        self.save_settings()
+        self.save_tasks()
+        self.scheduler_running = False
+        
+        # Kill any running processes
+        for task_id, task in self.tasks.items():
+            if task.running and task.process:
+                try:
+                    task.process.terminate()
+                except:
+                    pass
+        
+        # Stop the tray icon if running
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except:
+                pass
+        
+        # Quit the application
+        self.root.quit()
+        self.root.destroy()
+        sys.exit(0)
+    
+    def cleanup(self):
+        """Clean up running processes on exit"""
+        self.scheduler_running = False
+        for task_id, task in self.tasks.items():
+            if task.running and task.process:
+                try:
+                    task.process.terminate()
+                except:
+                    pass
+    
+    # ... (rest of the methods remain the same as your original code)
+    # The following methods should be kept as they were:
+    # add_current_to_scheduler, show_add_task_dialog, browse_folder_dialog, 
+    # generate_task_name, on_task_select, update_task_list, toggle_task_enabled,
+    # delete_task, run_task_now, show_edit_task_dialog, is_within_time_window,
+    # execute_task, build_task_command, update_task_next_run, add_task_log,
+    # start_global_scheduler, stop_global_scheduler, _run_scheduler_loop,
+    # check_and_start_scheduler, start_task_processor, _process_task_queue,
+    # browse_scripts_dir, browse_folder, set_current_path, load_config_from_folder,
+    # save_settings, save_tasks, load_tasks, load_settings, on_closing,
+    # stop_current_download, update_status, build_download_command,
+    # build_retry_command, build_move_command, run_script, execute_script
+
     def add_current_to_scheduler(self):
         """Add current download settings as a scheduled task"""
         if not self.download_url.get().strip():
@@ -1142,7 +1621,6 @@ Last Run: {task.last_run if task.last_run else 'Never'}
             if not task.enabled:
                 continue
             
-            # Schedule the task
             job = None
             if task.schedule_type == "minutes":
                 job = schedule.every(task.interval).minutes
@@ -1162,22 +1640,41 @@ Last Run: {task.last_run if task.last_run else 'Never'}
                 job.do(self.execute_task, task)
                 self.add_task_log(task_id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type}")
         
-        self.scheduler_status_label.config(text="Scheduler: Running", foreground="green")
-        self.start_scheduler_btn.config(state=tk.DISABLED)
-        self.stop_scheduler_btn.config(state=tk.NORMAL)
+        # Update UI for running state
+        self.start_scheduler_btn.config(
+            text="▶ Running", 
+            state=tk.DISABLED,
+            style="Running.TButton"
+        )
+        self.stop_scheduler_btn.config(
+            text="⏹ Stop", 
+            state=tk.NORMAL,
+            style="TButton"
+        )
+        self.scheduler_status_label.config(text="Scheduler: RUNNING", foreground="green")
         
         # Start scheduler thread if not running
         if not hasattr(self, '_scheduler_thread') or not self._scheduler_thread or not self._scheduler_thread.is_alive():
             self._scheduler_thread = threading.Thread(target=self._run_scheduler_loop, daemon=True)
             self._scheduler_thread.start()
-    
+
     def stop_global_scheduler(self):
         """Stop the global scheduler"""
         self.scheduler_running = False
         schedule.clear()
-        self.scheduler_status_label.config(text="Scheduler: Stopped", foreground="red")
-        self.start_scheduler_btn.config(state=tk.NORMAL)
-        self.stop_scheduler_btn.config(state=tk.DISABLED)
+        
+        # Update UI for stopped state
+        self.start_scheduler_btn.config(
+            text="▶ Start", 
+            state=tk.NORMAL,
+            style="TButton"
+        )
+        self.stop_scheduler_btn.config(
+            text="⏹ Stopped", 
+            state=tk.DISABLED,
+            style="Disabled.TButton"
+        )
+        self.scheduler_status_label.config(text="Scheduler: STOPPED", foreground="red")
     
     def _run_scheduler_loop(self):
         """Run the scheduler loop in background"""
@@ -1307,6 +1804,7 @@ Last Run: {task.last_run if task.last_run else 'Never'}
             },
             "scripts_dir": str(self.script_dir),
             "current_browse_dir": self.current_browse_dir,
+            "dark_mode": self.dark_mode.get(),
             "last_saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
@@ -1380,6 +1878,12 @@ Last Run: {task.last_run if task.last_run else 'Never'}
                 self.scripts_dir_var.set(str(self.script_dir))
             
             self.current_browse_dir = settings.get("current_browse_dir", str(Path.cwd()))
+            
+            # Load dark mode setting
+            dark_mode = settings.get("dark_mode", False)
+            self.dark_mode.set(dark_mode)
+            if dark_mode:
+                self.toggle_dark_mode()
             
             return True
         except Exception as e:

@@ -1,12 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+datas = []
+binaries = []
+hiddenimports = ['schedule', 'pystray', 'PIL', 'PIL.Image', 'PIL.ImageDraw', 'tkinter', 'threading', 'subprocess', 'json', 'datetime', 'pathlib', 'uuid', 'queue', 'atexit', 'getpass']
+tmp_ret = collect_all('schedule')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pystray')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
     ['Tak-Playlist-Downloader.py'],
     pathex=[],
-    binaries=[],
-    datas=[('Download-Playlist.ps1', '.'), ('Retry-Failed.ps1', '.'), ('Move-Recovered.ps1', '.')],
-    hiddenimports=['schedule', 'pystray', 'PIL'],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
