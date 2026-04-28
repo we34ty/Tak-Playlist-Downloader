@@ -193,7 +193,7 @@ $Format = 'mp3'
 $Quality = 'mid'
 $PlaylistUrl = $null
 $EnableArchive = $false
-$TakDataDir = "TakData"
+$TakDataDir = ".TakData"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
