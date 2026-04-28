@@ -22,7 +22,6 @@ NC='\033[0m'
 # ========== PACKAGE CHECK AND INSTALLATION ==========
 check_and_install_packages() {
     local missing_packages=()
-    local required_packages=()
     
     # Detect OS
     if [[ -f /etc/os-release ]]; then
@@ -37,7 +36,7 @@ check_and_install_packages() {
     # Check for yt-dlp
     if ! command -v yt-dlp &> /dev/null; then
         echo -e "${YELLOW}yt-dlp not found. Will install...${NC}"
-        required_packages+=("yt-dlp")
+        missing_packages+=("yt-dlp")
     else
         echo -e "${GREEN}✓ yt-dlp found${NC}"
     fi
@@ -45,7 +44,7 @@ check_and_install_packages() {
     # Check for ffmpeg
     if ! command -v ffmpeg &> /dev/null; then
         echo -e "${YELLOW}ffmpeg not found. Will install...${NC}"
-        required_packages+=("ffmpeg")
+        missing_packages+=("ffmpeg")
     else
         echo -e "${GREEN}✓ ffmpeg found${NC}"
     fi
@@ -53,7 +52,7 @@ check_and_install_packages() {
     # Check for curl
     if ! command -v curl &> /dev/null; then
         echo -e "${YELLOW}curl not found. Will install...${NC}"
-        required_packages+=("curl")
+        missing_packages+=("curl")
     else
         echo -e "${GREEN}✓ curl found${NC}"
     fi
@@ -61,33 +60,25 @@ check_and_install_packages() {
     # Check for jq (required for JSON parsing)
     if ! command -v jq &> /dev/null; then
         echo -e "${YELLOW}jq not found. Will install...${NC}"
-        required_packages+=("jq")
+        missing_packages+=("jq")
     else
         echo -e "${GREEN}✓ jq found${NC}"
     fi
     
-    # Check for Deno (required for archive recovery)
-    if ! command -v deno &> /dev/null; then
-        echo -e "${YELLOW}Deno not found. Will install...${NC}"
-        INSTALL_DENO=true
-    else
-        echo -e "${GREEN}✓ Deno found${NC}"
-    fi
-    
     # Install missing packages if any
-    if [ ${#required_packages[@]} -gt 0 ]; then
-        echo -e "${YELLOW}Installing missing packages: ${required_packages[*]}${NC}"
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        echo -e "${YELLOW}Installing missing packages: ${missing_packages[*]}${NC}"
         
         case "$OS" in
             ubuntu|debian)
                 sudo apt update
-                sudo apt install -y "${required_packages[@]}"
+                sudo apt install -y "${missing_packages[@]}"
                 ;;
             fedora|rhel|centos)
-                sudo dnf install -y "${required_packages[@]}"
+                sudo dnf install -y "${missing_packages[@]}"
                 ;;
             arch|manjaro)
-                sudo pacman -S --noconfirm "${required_packages[@]}"
+                sudo pacman -S --noconfirm "${missing_packages[@]}"
                 ;;
             darwin|macos)
                 if ! command -v brew &> /dev/null; then
@@ -95,16 +86,16 @@ check_and_install_packages() {
                     echo ' /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
                     exit 1
                 fi
-                brew install "${required_packages[@]}"
+                brew install "${missing_packages[@]}"
                 ;;
             *)
-                echo -e "${RED}Unsupported OS. Please install manually: ${required_packages[*]}${NC}"
+                echo -e "${RED}Unsupported OS. Please install manually: ${missing_packages[*]}${NC}"
                 exit 1
                 ;;
         esac
         
         # Verify installations
-        for pkg in "${required_packages[@]}"; do
+        for pkg in "${missing_packages[@]}"; do
             if ! command -v "$pkg" &> /dev/null; then
                 echo -e "${RED}Failed to install $pkg. Please install manually.${NC}"
                 exit 1
@@ -112,28 +103,55 @@ check_and_install_packages() {
         done
     fi
     
-    # Install yt-dlp via pip if package manager didn't have it
-    if [[ " ${required_packages[*]} " =~ "yt-dlp" ]] && ! command -v yt-dlp &> /dev/null; then
+    # Install yt-dlp via pip if package manager didn't have it (fallback)
+    if [[ " ${missing_packages[*]} " =~ "yt-dlp" ]] && ! command -v yt-dlp &> /dev/null; then
         echo -e "${YELLOW}Installing yt-dlp via pip...${NC}"
         pip3 install yt-dlp --break-system-packages 2>/dev/null || pip3 install yt-dlp
-    fi
-    
-    # Install Deno if needed
-    if [ "$INSTALL_DENO" = true ]; then
-        echo -e "${YELLOW}Installing Deno...${NC}"
-        curl -fsSL https://deno.land/install.sh | sh
-        export DENO_INSTALL="$HOME/.deno"
-        export PATH="$DENO_INSTALL/bin:$PATH"
-        echo 'export PATH="$HOME/.deno/bin:$PATH"' >> "$HOME/.bashrc"
-        echo -e "${GREEN}Deno installed. Please restart your terminal or run: source ~/.bashrc${NC}"
     fi
     
     echo -e "${GREEN}All required packages are installed!${NC}"
     echo ""
 }
 
+# ========== DENO INSTALLATION FOR LINUX/MAC ==========
+check_and_install_deno() {
+    echo -e "${BLUE}Checking for Deno (JavaScript runtime for yt-dlp)...${NC}"
+    
+    if ! command -v deno &> /dev/null; then
+        echo -e "${YELLOW}Deno not found. Installing Deno...${NC}"
+        
+        # Download and install Deno
+        curl -fsSL https://deno.land/install.sh | sh
+        
+        # Add to PATH for this session
+        export DENO_INSTALL="$HOME/.deno"
+        export PATH="$DENO_INSTALL/bin:$PATH"
+        
+        # Add to .bashrc for future sessions
+        if [ -f "$HOME/.bashrc" ]; then
+            echo 'export PATH="$HOME/.deno/bin:$PATH"' >> "$HOME/.bashrc"
+        elif [ -f "$HOME/.zshrc" ]; then
+            echo 'export PATH="$HOME/.deno/bin:$PATH"' >> "$HOME/.zshrc"
+        fi
+        
+        if command -v deno &> /dev/null; then
+            echo -e "${GREEN}✓ Deno installed successfully${NC}"
+            deno --version | head -1
+        else
+            echo -e "${RED}✗ Deno installation failed${NC}"
+            echo -e "${YELLOW}Please install manually: curl -fsSL https://deno.land/install.sh | sh${NC}"
+        fi
+    else
+        echo -e "${GREEN}✓ Deno found: $(deno --version | head -1)${NC}"
+    fi
+    echo ""
+}
+
 # Run package check
 check_and_install_packages
+
+# Run Deno check (required for archive recovery and JS challenges)
+check_and_install_deno
 
 # Function to get TakData directory path
 get_takdata_path() {
@@ -244,7 +262,7 @@ show_help() {
     echo "  -q QUALITY    Quality: low, mid, high (default: mid)"
     echo "                Audio: low(80k), mid(192k), high(320k)"
     echo "                Video: low(worst), mid(480p), high(best)"
-    echo "  -a            Enable archive recovery for deleted videos (Linux only)"
+    echo "  -a            Enable archive recovery for deleted videos"
     echo "  -h            Show this help"
     echo ""
     echo "Note: Settings and logs are stored in '${TAK_DATA_DIR}' subfolder"
@@ -482,7 +500,7 @@ search_archive() {
 
 # ========== EXTRACT VIDEO IDs ==========
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}YouTube Playlist Downloader${NC}"
+echo -e "${GREEN}Tak Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
 echo "TakData directory: $TAK_DATA_PATH"

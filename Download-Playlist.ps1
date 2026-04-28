@@ -11,49 +11,179 @@ param(
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-# ========== FFMPEG CHECK & AUTO-DOWNLOAD ==========
-$FfmpegExe = Join-Path $ScriptDir 'ffmpeg.exe'
-if (-not (Test-Path $FfmpegExe)) {
-	Write-Host "[!] ffmpeg.exe not found. Downloading latest static Windows build..."
-	$ffmpegZipUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-	$ffmpegZip = Join-Path $ScriptDir 'ffmpeg-release-essentials.zip'
-	try {
-		Invoke-WebRequest -Uri $ffmpegZipUrl -OutFile $ffmpegZip -UseBasicParsing
-		Write-Host "[OK] ffmpeg zip downloaded. Extracting..."
-		Add-Type -AssemblyName System.IO.Compression.FileSystem
-		[System.IO.Compression.ZipFile]::ExtractToDirectory($ffmpegZip, $ScriptDir)
-		$ffmpegFound = Get-ChildItem -Path $ScriptDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-		if ($ffmpegFound) {
-			Move-Item -Force $ffmpegFound.FullName $FfmpegExe
-			Write-Host "[OK] ffmpeg.exe extracted and moved."
-		} else {
-			Write-Host "ERROR: ffmpeg.exe not found after extraction."
-			exit 1
-		}
-		Remove-Item $ffmpegZip -Force
-		Get-ChildItem -Path $ScriptDir -Directory | Where-Object { $_.Name -like 'ffmpeg-*' } | Remove-Item -Recurse -Force
-	} catch {
-		Write-Host "ERROR: Failed to download or extract ffmpeg."
-		exit 1
-	}
-}
-if (-not (Test-Path $FfmpegExe)) {
-	Write-Host "ERROR: ffmpeg.exe is required but could not be installed. Exiting."
-	exit 1
+# ========== CHECK AND INSTALL WINGET (Windows 10/11) ==========
+function Install-Winget {
+    Write-Host "[!] Checking if winget is available..." -ForegroundColor Yellow
+    
+    # Check if winget is already available
+    $wingetPath = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetPath) {
+        Write-Host "[OK] winget found" -ForegroundColor Green
+        return $true
+    }
+    
+    # winget is part of App Installer on Windows 10/11
+    Write-Host "[!] winget not found. Attempting to install App Installer..." -ForegroundColor Yellow
+    
+    # Check Windows version
+    $osInfo = Get-ComputerInfo -ErrorAction SilentlyContinue
+    $buildNumber = [Environment]::OSVersion.Version.Build
+    
+    if ($buildNumber -ge 18362) {
+        Write-Host "[!] Windows 10/11 detected. Installing App Installer from Microsoft Store..." -ForegroundColor Yellow
+        
+        # Try to install App Installer via Microsoft Store link
+        $wingetUrl = "https://aka.ms/getwinget"
+        try {
+            Start-Process $wingetUrl -Wait -NoNewWindow
+            Write-Host "[OK] Please follow the Microsoft Store prompt to install App Installer" -ForegroundColor Green
+            Write-Host "[!] After installation, please run this script again" -ForegroundColor Yellow
+            pause
+            exit 0
+        } catch {
+            Write-Host "[WARN] Could not automatically install winget" -ForegroundColor Red
+            return $false
+        }
+    } else {
+        Write-Host "[WARN] winget requires Windows 10 1809 (build 18362) or later" -ForegroundColor Red
+        return $false
+    }
+    return $false
 }
 
-# ========== YT-DLP CHECK & AUTO-DOWNLOAD ==========
+# ========== YT-DLP INSTALLATION WITH WINGET ==========
+if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
+    Write-Host "[!] yt-dlp.exe not found. Attempting to install with winget..." -ForegroundColor Yellow
+    
+    # Ensure winget is available
+    if (Install-Winget) {
+        Write-Host "[!] Installing yt-dlp via winget..." -ForegroundColor Yellow
+        
+        # Try to install yt-dlp using winget
+        $installResult = & winget install yt-dlp.yt-dlp --silent --accept-package-agreements --accept-source-agreements 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[OK] yt-dlp installed successfully via winget" -ForegroundColor Green
+            
+            # Find where winget installed yt-dlp
+            $wingetPath = & winget list yt-dlp.yt-dlp --source winget | Select-String "yt-dlp"
+            $ytDlpPath = & where.exe yt-dlp 2>$null | Select-Object -First 1
+            
+            if ($ytDlpPath) {
+                Copy-Item $ytDlpPath -Destination (Join-Path $ScriptDir 'yt-dlp.exe') -Force
+                Write-Host "[OK] yt-dlp.exe copied to script directory" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "[WARN] winget installation failed. Falling back to direct download..." -ForegroundColor Yellow
+        }
+    }
+    
+    # Fallback: Direct download if winget failed
+    if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
+        Write-Host "[!] Downloading standalone yt-dlp.exe (with built-in JS runtime)..." -ForegroundColor Yellow
+        $ytDlpUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+        try {
+            Invoke-WebRequest -Uri $ytDlpUrl -OutFile (Join-Path $ScriptDir 'yt-dlp.exe') -UseBasicParsing
+            Write-Host "[OK] yt-dlp.exe downloaded successfully (standalone version with JS runtime)" -ForegroundColor Green
+        } catch {
+            Write-Host "ERROR: Failed to download yt-dlp.exe" -ForegroundColor Red
+            exit 1
+        }
+    }
+}
 $YtDlpExe = Join-Path $ScriptDir 'yt-dlp.exe'
-if (-not (Test-Path $YtDlpExe)) {
-	Write-Host "[!] yt-dlp.exe not found. Downloading latest version..."
-	$ytDlpUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
-	try {
-		Invoke-WebRequest -Uri $ytDlpUrl -OutFile $YtDlpExe -UseBasicParsing
-		Write-Host "[OK] yt-dlp.exe downloaded successfully."
-	} catch {
-		Write-Host "ERROR: Failed to download yt-dlp.exe."
-		exit 1
-	}
+
+# ========== FFMPEG INSTALLATION WITH WINGET ==========
+$FfmpegExe = Join-Path $ScriptDir 'ffmpeg.exe'
+if (-not (Test-Path $FfmpegExe)) {
+    Write-Host "[!] ffmpeg.exe not found. Attempting to install with winget..." -ForegroundColor Yellow
+    
+    if (Install-Winget) {
+        Write-Host "[!] Installing ffmpeg via winget..." -ForegroundColor Yellow
+        
+        $installResult = & winget install ffmpeg --silent --accept-package-agreements --accept-source-agreements 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[OK] ffmpeg installed successfully via winget" -ForegroundColor Green
+            
+            # Find where winget installed ffmpeg
+            $ffmpegPath = & where.exe ffmpeg 2>$null | Select-Object -First 1
+            if ($ffmpegPath) {
+                Copy-Item $ffmpegPath -Destination $FfmpegExe -Force
+                Write-Host "[OK] ffmpeg.exe copied to script directory" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "[WARN] winget installation failed. Falling back to manual download..." -ForegroundColor Yellow
+        }
+    }
+    
+    # Fallback: Direct download if winget failed
+    if (-not (Test-Path $FfmpegExe)) {
+        Write-Host "[!] ffmpeg.exe not found. Downloading latest static Windows build..." -ForegroundColor Yellow
+        $ffmpegZipUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+        $ffmpegZip = Join-Path $ScriptDir 'ffmpeg-release-essentials.zip'
+        try {
+            Invoke-WebRequest -Uri $ffmpegZipUrl -OutFile $ffmpegZip -UseBasicParsing
+            Write-Host "[OK] ffmpeg zip downloaded. Extracting..." -ForegroundColor Green
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($ffmpegZip, $ScriptDir)
+            $ffmpegFound = Get-ChildItem -Path $ScriptDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+            if ($ffmpegFound) {
+                Move-Item -Force $ffmpegFound.FullName $FfmpegExe
+                Write-Host "[OK] ffmpeg.exe extracted and moved." -ForegroundColor Green
+            } else {
+                Write-Host "ERROR: ffmpeg.exe not found after extraction." -ForegroundColor Red
+                exit 1
+            }
+            Remove-Item $ffmpegZip -Force
+            Get-ChildItem -Path $ScriptDir -Directory | Where-Object { $_.Name -like 'ffmpeg-*' } | Remove-Item -Recurse -Force
+        } catch {
+            Write-Host "ERROR: Failed to download or extract ffmpeg." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+if (-not (Test-Path $FfmpegExe)) {
+    Write-Host "ERROR: ffmpeg.exe is required but could not be installed. Exiting." -ForegroundColor Red
+    exit 1
+}
+
+# ========== DENO INSTALLATION (Fallback - direct download) ==========
+function Install-Deno {
+    Write-Host "[!] Deno not found. Installing Deno (JavaScript runtime for yt-dlp)..." -ForegroundColor Yellow
+    
+    $denoUrl = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
+    $denoZip = Join-Path $ScriptDir 'deno.zip'
+    $denoExe = Join-Path $ScriptDir 'deno.exe'
+    
+    try {
+        Invoke-WebRequest -Uri $denoUrl -OutFile $denoZip -UseBasicParsing
+        Write-Host "[OK] Deno zip downloaded. Extracting..." -ForegroundColor Green
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($denoZip, $ScriptDir)
+        Remove-Item $denoZip -Force
+        Write-Host "[OK] Deno installed to: $denoExe" -ForegroundColor Green
+        
+        # Add deno to PATH for this session
+        $env:Path = "$ScriptDir;$env:Path"
+        
+        # Verify installation
+        & $denoExe --version
+        Write-Host "[OK] Deno is ready" -ForegroundColor Green
+    } catch {
+        Write-Host "[WARN] Deno installation failed. yt-dlp may still work but archive recovery might have issues." -ForegroundColor Yellow
+    }
+}
+
+# Check if Deno is available (for archive recovery)
+$denoExe = Join-Path $ScriptDir 'deno.exe'
+if (-not (Test-Path $denoExe)) {
+    $systemDeno = Get-Command deno -ErrorAction SilentlyContinue
+    if (-not $systemDeno) {
+        Install-Deno
+    } else {
+        Write-Host "[OK] Deno found in system PATH" -ForegroundColor Green
+    }
 }
 
 # ========== DEFAULT CONFIGURATION ==========
@@ -63,7 +193,7 @@ $Format = 'mp3'
 $Quality = 'mid'
 $PlaylistUrl = $null
 $EnableArchive = $false
-$TakDataDir = ".TakData"
+$TakDataDir = "TakData"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -89,7 +219,8 @@ function Show-Help {
 	Write-Host "  -a              Enable archive recovery for deleted videos"
 	Write-Host "  -h             Show this help"
 	Write-Host ""
-	Write-Host "Note: Settings and logs are stored in '$TakDataDir' subfolder"
+	Write-Host "Note: Settings and logs are stored in '${TakDataDir}' subfolder"
+	Write-Host "Note: yt-dlp and ffmpeg are installed automatically via winget if available"
 }
 
 # ========== FUNCTION TO GET TAKDATA PATH ==========
