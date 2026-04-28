@@ -32,7 +32,7 @@ if (-not (Test-Path $FfmpegExe)) {
 		Remove-Item $ffmpegZip -Force
 		Get-ChildItem -Path $ScriptDir -Directory | Where-Object { $_.Name -like 'ffmpeg-*' } | Remove-Item -Recurse -Force
 	} catch {
-		Write-Host "ERROR: Failed to download or extract ffmpeg. Please check your internet connection or download manually from $ffmpegZipUrl"
+		Write-Host "ERROR: Failed to download or extract ffmpeg."
 		exit 1
 	}
 }
@@ -50,7 +50,7 @@ if (-not (Test-Path $YtDlpExe)) {
 		Invoke-WebRequest -Uri $ytDlpUrl -OutFile $YtDlpExe -UseBasicParsing
 		Write-Host "[OK] yt-dlp.exe downloaded successfully."
 	} catch {
-		Write-Host "ERROR: Failed to download yt-dlp.exe. Please check your internet connection or download manually from $ytDlpUrl"
+		Write-Host "ERROR: Failed to download yt-dlp.exe."
 		exit 1
 	}
 }
@@ -62,6 +62,7 @@ $Format = 'mp3'
 $Quality = 'mid'
 $PlaylistUrl = $null
 $EnableArchive = $false
+$ConfigFile = ".download_config.txt"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -74,7 +75,7 @@ function Write-Magenta { Write-Host $args -ForegroundColor Magenta }
 function Show-Help {
 	Write-Host "Usage: .\Download-Playlist.ps1 -p <PLAYLIST_URL> [-o <OUTPUT_DIR>] [-t <SECONDS>] [-f <FORMAT>] [-q <QUALITY>] [-a] [-h]" -ForegroundColor Cyan
 	Write-Host ""
-	Write-Host "Required:"
+	Write-Host "Required (first run only):"
 	Write-Host "  -p <URL>        YouTube playlist URL"
 	Write-Host ""
 	Write-Host "Options:"
@@ -84,17 +85,105 @@ function Show-Help {
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "                Audio: low(80k), mid(192k), high(320k)"
 	Write-Host "                Video: low(worst), mid(480p), high(best)"
-	Write-Host "  -a              Enable archive recovery for deleted videos (Wayback Machine, GhostArchive, etc.)"
+	Write-Host "  -a              Enable archive recovery for deleted videos"
 	Write-Host "  -h             Show this help"
+	Write-Host ""
+	Write-Host "Note: Settings are saved in .download_config.txt in the output directory."
+	Write-Host "      Subsequent runs without -p will use saved playlist URL."
+	Write-Host "      Retry-Failed.ps1 and Move-Recovered.ps1 share this configuration."
 }
 
-if ($h) { Show-Help; exit 0 }
-if ($p) { $PlaylistUrl = $p }
-if ($o) { $OutputDir = $o }
-if ($t) { $SleepInterval = $t }
-if ($f) { $Format = $f }
-if ($q) { $Quality = $q }
-if ($a) { $EnableArchive = $true }
+# ========== FUNCTION TO LOAD SAVED CONFIGURATION ==========
+function Load-SavedConfig {
+	param([string]$configPath)
+	
+	if (Test-Path $configPath) {
+		Write-Blue "Loading saved configuration from: $configPath"
+		$config = Get-Content $configPath -Raw | ConvertFrom-Json
+		return $config
+	}
+	return $null
+}
+
+# ========== FUNCTION TO SAVE CONFIGURATION ==========
+function Save-Config {
+	param(
+		[string]$configPath,
+		[string]$playlistUrl,
+		[string]$outputDir,
+		[int]$sleepInterval,
+		[string]$format,
+		[string]$quality,
+		[bool]$enableArchive
+	)
+	
+	$config = @{
+		PlaylistUrl = $playlistUrl
+		OutputDir = $outputDir
+		SleepInterval = $sleepInterval
+		Format = $format
+		Quality = $quality
+		EnableArchive = $enableArchive
+		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+	}
+	
+	$config | ConvertTo-Json | Set-Content $configPath
+	Write-Blue "Configuration saved to: $configPath"
+}
+
+# ========== PARSE COMMAND LINE ARGUMENTS ==========
+$HAS_P = $false
+$HAS_O = $false
+$HAS_T = $false
+$HAS_F = $false
+$HAS_Q = $false
+$HAS_A = $false
+
+# Parse manually to track which arguments were provided
+$argList = @($MyInvocation.MyCommand.Path) + $args
+for ($i = 0; $i -lt $args.Length; $i++) {
+	switch ($args[$i]) {
+		'-p' { $HAS_P = $true; $PlaylistUrl = $args[$i+1] }
+		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
+		'-t' { $HAS_T = $true; $SleepInterval = [int]$args[$i+1] }
+		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
+		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
+		'-a' { $HAS_A = $true; $EnableArchive = $true }
+		'-h' { Show-Help; exit 0 }
+	}
+}
+
+# ========== CHECK FOR SAVED CONFIGURATION IF NO -p PROVIDED ==========
+if (-not $HAS_P) {
+	$configPathToCheck = Join-Path (Get-Location) $ConfigFile
+	if ($HAS_O) {
+		$configPathToCheck = Join-Path $OutputDir $ConfigFile
+	}
+	
+	$savedConfig = Load-SavedConfig -configPath $configPathToCheck
+	
+	if ($savedConfig) {
+		Write-Green "[INFO] Found saved configuration from: $($savedConfig.LastUpdated)"
+		$PlaylistUrl = $savedConfig.PlaylistUrl
+		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
+		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
+		if (-not $HAS_F) { $Format = $savedConfig.Format }
+		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
+		if (-not $HAS_A) { $EnableArchive = $savedConfig.EnableArchive }
+		
+		Write-Green "[INFO] Using saved settings:"
+		Write-Host "  Playlist URL: $PlaylistUrl"
+		Write-Host "  Format: $Format"
+		Write-Host "  Quality: $Quality"
+		Write-Host "  Delay: ${SleepInterval}s"
+		Write-Host "  Archive recovery: $(if ($EnableArchive) { 'ON' } else { 'OFF' })"
+		Write-Host ""
+	} else {
+		Write-Red "ERROR: Playlist URL is required on first run"
+		Show-Help
+		exit 1
+	}
+}
 
 if (-not $PlaylistUrl) {
 	Write-Red "ERROR: Playlist URL is required"
@@ -201,8 +290,7 @@ switch ($FormatLower) {
 	}
 }
 
-# ========== ARCHIVE SEARCH FUNCTIONS (for -a flag) ==========
-
+# ========== ARCHIVE SEARCH FUNCTIONS ==========
 function Extract-Metadata {
 	param([string]$html)
 	
@@ -313,6 +401,20 @@ function Search-Archive {
 
 # ========== CREATE OUTPUT DIRECTORY ==========
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
+
+# ========== SAVE CONFIGURATION (if -p was provided) ==========
+if ($HAS_P) {
+	$configFilePath = Join-Path $OutputDir $ConfigFile
+	Save-Config -configPath $configFilePath `
+		-playlistUrl $PlaylistUrl `
+		-outputDir $OutputDir `
+		-sleepInterval $SleepInterval `
+		-format $Format `
+		-quality $Quality `
+		-enableArchive $EnableArchive
+}
+
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
 Push-Location $OutputDir
 
 # ========== LOG FILES ==========
@@ -342,19 +444,18 @@ Write-Blue "Fetching playlist..."
 Remove-Item $VideoIdsFile -ErrorAction SilentlyContinue
 & $YtDlpExe --cookies-from-browser firefox --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
 if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
-	& $YtDlpExe --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+	& $YtDlpExe --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s)" $PlaylistUrl | Set-Content $VideoIdsFile
 }
 if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
 	Write-Red "ERROR: Could not extract video IDs"
+	Pop-Location
 	exit 1
 }
 
 $VideoIds = Get-Content $VideoIdsFile | Where-Object { $_.Trim() }
 $Total = $VideoIds.Count
 
-# Count based on mode
 if ($EnableArchive) {
-	# With -a: Only skip already downloaded and permanently failed
 	$DownloadedCount = @(Select-String -Path $DownloadedLog -Pattern "^.*$" | ForEach-Object { $_.Line } | Where-Object { $VideoIds -contains $_ }).Count
 	$PermanentlyFailedCount = @(Select-String -Path $PermanentlyFailedLog -Pattern "^.*$" | ForEach-Object { $_.Line } | Where-Object { $VideoIds -contains $_ }).Count
 	$Remaining = $Total - $DownloadedCount - $PermanentlyFailedCount
@@ -364,7 +465,6 @@ if ($EnableArchive) {
 	Write-Host "Remaining to process: $Remaining"
 	Write-Host "NOTE: With -a enabled, previously failed videos will be checked against archives"
 } else {
-	# Without -a: Skip downloaded, permanently failed, and failed
 	$DownloadedCount = @(Select-String -Path $DownloadedLog -Pattern "^.*$" | ForEach-Object { $_.Line } | Where-Object { $VideoIds -contains $_ }).Count
 	$PermanentlyFailedCount = @(Select-String -Path $PermanentlyFailedLog -Pattern "^.*$" | ForEach-Object { $_.Line } | Where-Object { $VideoIds -contains $_ }).Count
 	$FailedCount = @(Select-String -Path $FailedLog -Pattern "^.*$" | ForEach-Object { $_.Line } | Where-Object { $VideoIds -contains $_ }).Count
@@ -392,21 +492,18 @@ foreach ($video_id in $VideoIds) {
 	if (-not $video_id) { continue }
 	$Processed++
 	
-	# Always skip if already downloaded
 	if (Select-String -Path $DownloadedLog -Pattern "^$video_id$" -Quiet) {
 		Write-Host "[$($Processed)/$Total] SKIP: $video_id (already downloaded)"
 		$SkippedAlready++
 		continue
 	}
 	
-	# Skip if permanently failed (never retry)
 	if (Select-String -Path $PermanentlyFailedLog -Pattern "^$video_id$" -Quiet) {
 		Write-Host "[$($Processed)/$Total] SKIP: $video_id (permanently failed - not recoverable)"
 		$SkippedPermanentlyFailed++
 		continue
 	}
 	
-	# If NOT using -a, skip videos in failed log (they'll be retried by Retry-Failed.ps1)
 	if (-not $EnableArchive) {
 		if (Select-String -Path $FailedLog -Pattern "^$video_id$" -Quiet) {
 			Write-Host "[$($Processed)/$Total] SKIP: $video_id (previously failed - will retry later)"
@@ -418,7 +515,6 @@ foreach ($video_id in $VideoIds) {
 	Write-Yellow "[$($Processed)/$Total] DOWNLOADING: $video_id"
 	if (-not (Test-Internet)) { Wait-ForInternet }
 	
-	# Build yt-dlp argument array
 	$args = @()
 	$args += '--cookies-from-browser'; $args += 'firefox'
 	$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
@@ -440,7 +536,6 @@ foreach ($video_id in $VideoIds) {
 	if ($exitCode -eq 0) {
 		Write-Green "  [OK] Success - added to log"
 		Add-Content $DownloadedLog $video_id
-		# Also remove from failed log if it exists there
 		Remove-FromFailedLog -video_id $video_id
 		$YoutubeSuccess++
 	} else {
@@ -449,12 +544,12 @@ foreach ($video_id in $VideoIds) {
 		if ($EnableArchive) {
 			Write-Blue "  -> Attempting archive recovery..."
 			if (Search-Archive -video_id $video_id) {
-				Write-Green "  Recovered from archive!"
+				Write-Green "  [OK] Recovered from archive!"
 				Add-Content $DownloadedLog $video_id
 				Remove-FromFailedLog -video_id $video_id
 				$ArchiveRecovered++
 			} else {
-				Write-Red "  Not found in any archive"
+				Write-Red "  [FAILED] Not found in any archive"
 				Write-Yellow "  -> Marked as permanently failed (will not retry)"
 				Add-Content $PermanentlyFailedLog $video_id
 				Remove-FromFailedLog -video_id $video_id
@@ -514,9 +609,9 @@ if ($EnableArchive) {
 Write-Blue "- Skipped (already in log): $SkippedAlready"
 Write-Blue "- Skipped (permanently failed): $SkippedPermanentlyFailed"
 if ($EnableArchive) {
-	Write-Red "[X] Permanently failed (not in any archive): $PermanentlyFailedThisRun"
+	Write-Red "[FAILED] Permanently failed (not in any archive): $PermanentlyFailedThisRun"
 } else {
-	Write-Red "[X] Newly failed: $FailedVideos"
+	Write-Red "[FAILED] Newly failed: $FailedVideos"
 }
 Write-Host ""
 Write-Host "Files saved to: $OutputDir"
@@ -530,4 +625,5 @@ if ($EnableArchive) {
 	Write-Host "Run Retry-Failed.ps1 later to retry them"
 }
 
+# ========== RESTORE ORIGINAL LOCATION ==========
 Pop-Location

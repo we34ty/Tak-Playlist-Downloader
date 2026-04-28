@@ -5,6 +5,7 @@ OUTPUT_DIR="$(pwd)"  # Default to current directory
 SLEEP_INTERVAL=11     # Default 11 seconds
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality
+CONFIG_FILE=".download_config.txt"
 # ===========================================
 
 # Colors
@@ -15,6 +16,49 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
+
+# Function to load saved configuration
+load_saved_config() {
+    local config_path="$1"
+    
+    if [ -f "$config_path" ]; then
+        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
+        source "$config_path"
+        return 0
+    fi
+    return 1
+}
+
+# Function to save configuration
+save_config() {
+    local config_path="$1"
+    local format="$2"
+    local quality="$3"
+    local sleep_interval="$4"
+    
+    # Only update format and quality in config, preserve other values
+    if [ -f "$config_path" ]; then
+        # Load existing config, then update specific values
+        source "$config_path"
+    fi
+    
+    # Update with new values (only if provided)
+    [ -n "$format" ] && FORMAT="$format"
+    [ -n "$quality" ] && QUALITY="$quality"
+    [ -n "$sleep_interval" ] && SLEEP_INTERVAL="$sleep_interval"
+    
+    cat > "$config_path" << EOF
+# Tak Playlist Downloader Configuration
+# Generated on $(date '+%Y-%m-%d %H:%M:%S')
+PLAYLIST_URL="$PLAYLIST_URL"
+OUTPUT_DIR="$OUTPUT_DIR"
+SLEEP_INTERVAL=$SLEEP_INTERVAL
+FORMAT="$FORMAT"
+QUALITY="$QUALITY"
+ENABLE_ARCHIVE=$ENABLE_ARCHIVE
+EOF
+    echo -e "${BLUE}Configuration updated in: $config_path${NC}"
+}
 
 # Internet connection check
 check_internet() {
@@ -80,6 +124,9 @@ show_help() {
     echo "  -f FORMAT     Output format (default: mp3)"
     echo "  -q QUALITY    Quality: low, mid, high (default: mid)"
     echo "  -h            Show this help message"
+    echo ""
+    echo "Note: This script shares configuration with Download-Playlist.sh"
+    echo "      Settings from .download_config.txt will be used if present."
 }
 
 # Parse arguments
@@ -93,6 +140,47 @@ while getopts "o:t:f:q:h" opt; do
         *) show_help; exit 1 ;;
     esac
 done
+
+# Track which arguments were explicitly provided
+HAS_O=0
+HAS_T=0
+HAS_F=0
+HAS_Q=0
+
+for arg in "$@"; do
+    case "$arg" in
+        -o) HAS_O=1 ;;
+        -t) HAS_T=1 ;;
+        -f) HAS_F=1 ;;
+        -q) HAS_Q=1 ;;
+    esac
+done
+
+# ========== LOAD SAVED CONFIGURATION ==========
+CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
+if [ -f "$CONFIG_PATH" ]; then
+    load_saved_config "$CONFIG_PATH"
+    
+    # Apply saved values only if not overridden by command line
+    if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
+        OUTPUT_DIR="$OUTPUT_DIR"
+    fi
+    if [ $HAS_T -eq 0 ] && [ -n "$SLEEP_INTERVAL" ]; then
+        SLEEP_INTERVAL="$SLEEP_INTERVAL"
+    fi
+    if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
+        FORMAT="$FORMAT"
+    fi
+    if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
+        QUALITY="$QUALITY"
+    fi
+    
+    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_PATH${NC}"
+    echo "  Format: $FORMAT"
+    echo "  Quality: $QUALITY"
+    echo "  Delay: ${SLEEP_INTERVAL}s"
+    echo ""
+fi
 
 # Validate quality
 if [[ ! "$QUALITY" =~ ^(low|mid|high)$ ]]; then
@@ -130,7 +218,12 @@ echo -e "${BLUE}Quality: $QUALITY (forcing ${FORMAT_LOWER} conversion)${NC}"
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 cd "$OUTPUT_DIR" || exit 1
 
-# Set up hidden file paths with dot prefix
+# ========== SAVE CONFIGURATION (if any format/quality changes were made) ==========
+if [ $HAS_F -eq 1 ] || [ $HAS_Q -eq 1 ] || [ $HAS_T -eq 1 ]; then
+    save_config "$CONFIG_PATH" "$FORMAT" "$QUALITY" "$SLEEP_INTERVAL"
+fi
+
+# Set up hidden file paths
 ARCHIVE_DIR=".archive_recovered"
 RECOVERED_LOG=".recovered_ids.txt"
 DOWNLOADED_LOG=".downloaded_ids.txt"
@@ -240,7 +333,6 @@ TEMP_RETRY_LIST=".retry_list_temp.txt"
 while IFS= read -r video_id; do
     [ -z "$video_id" ] && continue
     
-    # Use -- with grep to handle hyphens
     if grep -Fxq -- "$video_id" "$PERMANENTLY_FAILED_LOG" 2>/dev/null; then
         echo -e "${CYAN}  Skipping permanently failed: $video_id${NC}"
         remove_from_failed "$video_id"

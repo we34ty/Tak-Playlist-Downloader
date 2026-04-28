@@ -39,6 +39,7 @@ if (-not (Test-Path $FfmpegExe)) {
 $OutputDir = Get-Location
 $Format = 'mp3'
 $Quality = 'mid'
+$ConfigFile = ".download_config.txt"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -58,15 +59,47 @@ function Show-Help {
 	Write-Host "                Video: mp4, webm, mkv, avi, mov"
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "  -h             Show this help message"
+	Write-Host ""
+	Write-Host "Note: This script shares configuration with Download-Playlist.ps1"
+	Write-Host "      Settings from .download_config.txt will be used if present."
 }
 
-if ($h) { Show-Help; exit 0 }
-if ($o) { $OutputDir = $o }
-if ($f) { $Format = $f }
-if ($q) { $Quality = $q }
+# ========== PARSE ARGUMENTS AND TRACK WHAT WAS PROVIDED ==========
+$HAS_O = $false
+$HAS_F = $false
+$HAS_Q = $false
+
+for ($i = 0; $i -lt $args.Length; $i++) {
+	switch ($args[$i]) {
+		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
+		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
+		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
+		'-h' { Show-Help; exit 0 }
+	}
+}
+
+# ========== LOAD SAVED CONFIGURATION ==========
+$ConfigPath = Join-Path $OutputDir $ConfigFile
+if (Test-Path $ConfigPath) {
+	try {
+		$savedConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+		Write-Blue "Loading saved configuration from: $ConfigPath"
+		
+		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
+		if (-not $HAS_F) { $Format = $savedConfig.Format }
+		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
+		
+		Write-Green "[INFO] Using saved settings from: $ConfigPath"
+		Write-Host "  Format: $Format"
+		Write-Host "  Quality: $Quality"
+		Write-Host ""
+	} catch {
+		Write-Yellow "Could not parse saved configuration, using defaults"
+	}
+}
 
 # Validate quality
-if ($Quality -and $Quality -notin @('low', 'mid', 'high')) {
+if ($Quality -notin @('low', 'mid', 'high')) {
 	Write-Red "ERROR: Quality must be low, mid, or high"
 	exit 1
 }
@@ -111,7 +144,29 @@ switch ($Quality) {
 }
 Write-Blue "Conversion quality: $Quality (audio: ${AudioBitrate}, ${SampleRate}Hz)"
 
-# ========== SAVE ORIGINAL LOCATION AND CHANGE DIRECTORY ==========
+# ========== SAVE CONFIGURATION IF CHANGED ==========
+if ($HAS_F -or $HAS_Q) {
+	# Load existing config to preserve other values
+	$existingConfig = $null
+	if (Test-Path $ConfigPath) {
+		$existingConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+	}
+	
+	$config = @{
+		PlaylistUrl = if ($existingConfig) { $existingConfig.PlaylistUrl } else { "" }
+		OutputDir = $OutputDir
+		SleepInterval = if ($existingConfig) { $existingConfig.SleepInterval } else { 11 }
+		Format = $Format
+		Quality = $Quality
+		EnableArchive = if ($existingConfig) { $existingConfig.EnableArchive } else { $false }
+		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+	}
+	
+	$config | ConvertTo-Json | Set-Content $ConfigPath
+	Write-Blue "Configuration updated in: $ConfigPath"
+}
+
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
 Push-Location $OutputDir -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) {
 	Write-Red "ERROR: Cannot access directory: $OutputDir"

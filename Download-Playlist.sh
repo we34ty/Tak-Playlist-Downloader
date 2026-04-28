@@ -7,6 +7,7 @@ ENABLE_ARCHIVE=false  # Default false (disabled)
 PLAYLIST_URL=""       # Required argument
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality (low/mid/high)
+CONFIG_FILE=".download_config.txt"
 # ===========================================
 
 # Colors
@@ -17,6 +18,42 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
+
+# Function to load saved configuration
+load_saved_config() {
+    local config_path="$1"
+    
+    if [ -f "$config_path" ]; then
+        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
+        # Source the config file (it's just KEY=VALUE format)
+        source "$config_path"
+        return 0
+    fi
+    return 1
+}
+
+# Function to save configuration
+save_config() {
+    local config_path="$1"
+    local playlist_url="$2"
+    local output_dir="$3"
+    local sleep_interval="$4"
+    local format="$5"
+    local quality="$6"
+    local enable_archive="$7"
+    
+    cat > "$config_path" << EOF
+# Tak Playlist Downloader Configuration
+# Generated on $(date '+%Y-%m-%d %H:%M:%S')
+PLAYLIST_URL="$playlist_url"
+OUTPUT_DIR="$output_dir"
+SLEEP_INTERVAL=$sleep_interval
+FORMAT="$format"
+QUALITY="$quality"
+ENABLE_ARCHIVE=$enable_archive
+EOF
+    echo -e "${BLUE}Configuration saved to: $config_path${NC}"
+}
 
 # Clean playlist URL
 clean_playlist_url() {
@@ -109,7 +146,7 @@ set_quality_params() {
 show_help() {
     echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-q QUALITY] [-a] [-h]"
     echo ""
-    echo "Required:"
+    echo "Required (first run only):"
     echo "  -p URL        YouTube playlist URL"
     echo ""
     echo "Options:"
@@ -121,6 +158,9 @@ show_help() {
     echo "                Video: low(worst), mid(480p), high(best)"
     echo "  -a            Enable archive recovery for deleted videos (Linux only)"
     echo "  -h            Show this help"
+    echo ""
+    echo "Note: Settings are saved in .download_config.txt in the output directory."
+    echo "      Subsequent runs without -p will use saved playlist URL."
 }
 
 # Parse arguments
@@ -137,11 +177,65 @@ while getopts "p:o:t:f:q:ah" opt; do
     esac
 done
 
-# Check required argument
-if [ -z "$PLAYLIST_URL" ]; then
-    echo -e "${RED}ERROR: Playlist URL is required${NC}"
-    show_help
-    exit 1
+# Save original command line arguments to track what was explicitly provided
+HAS_P=0
+HAS_O=0
+HAS_T=0
+HAS_F=0
+HAS_Q=0
+HAS_A=0
+
+# Re-parse to track which arguments were explicitly provided
+for arg in "$@"; do
+    case "$arg" in
+        -p) HAS_P=1 ;;
+        -o) HAS_O=1 ;;
+        -t) HAS_T=1 ;;
+        -f) HAS_F=1 ;;
+        -q) HAS_Q=1 ;;
+        -a) HAS_A=1 ;;
+    esac
+done
+
+# ========== CHECK FOR SAVED CONFIGURATION IF NO -p PROVIDED ==========
+if [ $HAS_P -eq 0 ]; then
+    # Determine config file path
+    CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
+    if [ -f "$CONFIG_PATH" ]; then
+        # Load saved configuration
+        source "$CONFIG_PATH"
+        
+        echo -e "${GREEN}[INFO] Found saved configuration from: $(grep '^#' "$CONFIG_PATH" | head -1 | sed 's/# Generated on //')${NC}"
+        
+        # Apply saved values only if not overridden by command line
+        if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
+            OUTPUT_DIR="$OUTPUT_DIR"
+        fi
+        if [ $HAS_T -eq 0 ] && [ -n "$SLEEP_INTERVAL" ]; then
+            SLEEP_INTERVAL="$SLEEP_INTERVAL"
+        fi
+        if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
+            FORMAT="$FORMAT"
+        fi
+        if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
+            QUALITY="$QUALITY"
+        fi
+        if [ $HAS_A -eq 0 ] && [ -n "$ENABLE_ARCHIVE" ]; then
+            ENABLE_ARCHIVE="$ENABLE_ARCHIVE"
+        fi
+        
+        echo -e "${GREEN}[INFO] Using saved settings:${NC}"
+        echo "  Playlist URL: $PLAYLIST_URL"
+        echo "  Format: $FORMAT"
+        echo "  Quality: $QUALITY"
+        echo "  Delay: ${SLEEP_INTERVAL}s"
+        echo "  Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ON" || echo "OFF" )"
+        echo ""
+    else
+        echo -e "${RED}ERROR: Playlist URL is required on first run${NC}"
+        show_help
+        exit 1
+    fi
 fi
 
 # Validate quality
@@ -150,8 +244,10 @@ if [[ ! "$QUALITY" =~ ^(low|mid|high)$ ]]; then
     exit 1
 fi
 
-# Clean URL
-PLAYLIST_URL=$(clean_playlist_url "$PLAYLIST_URL")
+# Clean URL if provided
+if [ -n "$PLAYLIST_URL" ]; then
+    PLAYLIST_URL=$(clean_playlist_url "$PLAYLIST_URL")
+fi
 
 # Validate sleep interval
 if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
@@ -182,6 +278,13 @@ set_quality_params "$QUALITY" "$FORMAT"
 
 # ========== CREATE OUTPUT DIRECTORY ==========
 mkdir -p "$OUTPUT_DIR"
+
+# ========== SAVE CONFIGURATION (if -p was provided) ==========
+if [ $HAS_P -eq 1 ]; then
+    CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
+    save_config "$CONFIG_PATH" "$PLAYLIST_URL" "$OUTPUT_DIR" "$SLEEP_INTERVAL" "$FORMAT" "$QUALITY" "$ENABLE_ARCHIVE"
+fi
+
 cd "$OUTPUT_DIR" || exit 1
 
 # Set up hidden log files
@@ -320,19 +423,32 @@ fi
 # Calculate totals
 TOTAL=$(wc -l < "$VIDEO_IDS_FILE")
 
-# Use -- with grep to handle video IDs that start with hyphen
-DOWNLOADED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$LOG_FILE" 2>/dev/null | wc -l)
-RECOVERED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$RECOVERED_LOG" 2>/dev/null | wc -l)
-PERMANENTLY_FAILED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$PERMANENTLY_FAILED_LOG" 2>/dev/null | wc -l)
-
-REMAINING=$((TOTAL - DOWNLOADED_COUNT - RECOVERED_COUNT - PERMANENTLY_FAILED_COUNT))
-[ $REMAINING -lt 0 ] && REMAINING=0
-
-echo "Total videos: $TOTAL"
-echo "Downloaded (in log): $DOWNLOADED_COUNT"
-echo "Recovered: $RECOVERED_COUNT"
-echo "Permanently failed: $PERMANENTLY_FAILED_COUNT"
-echo "Remaining: $REMAINING"
+if [ "$ENABLE_ARCHIVE" = true ]; then
+    DOWNLOADED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$LOG_FILE" 2>/dev/null | wc -l)
+    RECOVERED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$RECOVERED_LOG" 2>/dev/null | wc -l)
+    PERMANENTLY_FAILED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$PERMANENTLY_FAILED_LOG" 2>/dev/null | wc -l)
+    REMAINING=$((TOTAL - DOWNLOADED_COUNT - RECOVERED_COUNT - PERMANENTLY_FAILED_COUNT))
+    [ $REMAINING -lt 0 ] && REMAINING=0
+    
+    echo "Total videos: $TOTAL"
+    echo "Downloaded (in log): $DOWNLOADED_COUNT"
+    echo "Recovered from archives: $RECOVERED_COUNT"
+    echo "Permanently failed: $PERMANENTLY_FAILED_COUNT"
+    echo "Remaining: $REMAINING"
+else
+    DOWNLOADED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$LOG_FILE" 2>/dev/null | wc -l)
+    RECOVERED_COUNT=0
+    PERMANENTLY_FAILED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$PERMANENTLY_FAILED_LOG" 2>/dev/null | wc -l)
+    FAILED_COUNT=$(grep -Fxf -- "$VIDEO_IDS_FILE" "$FAILED_LOG" 2>/dev/null | wc -l)
+    REMAINING=$((TOTAL - DOWNLOADED_COUNT - PERMANENTLY_FAILED_COUNT - FAILED_COUNT))
+    [ $REMAINING -lt 0 ] && REMAINING=0
+    
+    echo "Total videos: $TOTAL"
+    echo "Downloaded (in log): $DOWNLOADED_COUNT"
+    echo "Permanently failed: $PERMANENTLY_FAILED_COUNT"
+    echo "Failed (pending retry): $FAILED_COUNT"
+    echo "Remaining: $REMAINING"
+fi
 echo ""
 
 # Verify log file is writable
@@ -377,6 +493,14 @@ while IFS= read -r video_id; do
         continue
     fi
     
+    # If not using archive, skip videos in failed log
+    if [ "$ENABLE_ARCHIVE" = false ]; then
+        if grep -Fxq -- "$video_id" "$FAILED_LOG" 2>/dev/null; then
+            echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (previously failed - will retry later)"
+            continue
+        fi
+    fi
+    
     # If we get here, need to download
     echo ""
     echo -e "${YELLOW}[$(printf "%4d" $PROCESSED)/$TOTAL] DOWNLOADING: $video_id${NC}"
@@ -385,7 +509,7 @@ while IFS= read -r video_id; do
         wait_for_internet
     fi
     
-    # Download with yt-dlp (no separate archive file needed)
+    # Download with yt-dlp
     yt-dlp --cookies-from-browser firefox \
            --extractor-args youtubetab:skip=authcheck \
            $YTDLP_EXTRA_ARGS \
@@ -408,7 +532,7 @@ while IFS= read -r video_id; do
                 RECOVERED_VIDEOS=$((RECOVERED_VIDEOS + 1))
             else
                 echo -e "${RED}  ✗ Not found in any archive${NC}"
-                echo -e "${YELLOW}  → Marked as permanently failed${NC}"
+                echo -e "${YELLOW}  → Marked as permanently failed (will not retry)${NC}"
                 mark_permanently_failed "$video_id"
                 FAILED_VIDEOS=$((FAILED_VIDEOS + 1))
             fi
@@ -448,9 +572,15 @@ echo -e "${GREEN}=========================================${NC}"
 echo "Total videos: $TOTAL"
 echo ""
 echo -e "${GREEN}✓ Downloaded: $YOUTUBE_SUCCESS${NC}"
-echo -e "${GREEN}✓ Recovered: $RECOVERED_VIDEOS${NC}"
+if [ "$ENABLE_ARCHIVE" = true ]; then
+    echo -e "${GREEN}✓ Recovered from archives: $RECOVERED_VIDEOS${NC}"
+fi
 echo -e "${BLUE}○ Skipped (already in log): $SKIPPED_ALREADY${NC}"
 echo -e "${BLUE}○ Skipped (permanently failed): $SKIPPED_PERMANENT${NC}"
-echo -e "${RED}✗ Newly failed: $FAILED_VIDEOS${NC}"
+if [ "$ENABLE_ARCHIVE" = true ]; then
+    echo -e "${RED}✗ Permanently failed (not in any archive): $FAILED_VIDEOS${NC}"
+else
+    echo -e "${RED}✗ Newly failed: $FAILED_VIDEOS${NC}"
+fi
 echo ""
 echo "Files saved to: $OUTPUT_DIR"

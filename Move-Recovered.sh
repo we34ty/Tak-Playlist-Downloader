@@ -4,6 +4,7 @@
 OUTPUT_DIR="$(pwd)"  # Default to current directory
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality for conversion
+CONFIG_FILE=".download_config.txt"
 # ===========================================
 
 # Colors
@@ -16,6 +17,46 @@ NC='\033[0m'
 
 # Disable exit on error
 set +e
+
+# Function to load saved configuration
+load_saved_config() {
+    local config_path="$1"
+    
+    if [ -f "$config_path" ]; then
+        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
+        source "$config_path"
+        return 0
+    fi
+    return 1
+}
+
+# Function to save configuration
+save_config() {
+    local config_path="$1"
+    local format="$2"
+    local quality="$3"
+    
+    # Load existing config, then update specific values
+    if [ -f "$config_path" ]; then
+        source "$config_path"
+    fi
+    
+    # Update with new values (only if provided)
+    [ -n "$format" ] && FORMAT="$format"
+    [ -n "$quality" ] && QUALITY="$quality"
+    
+    cat > "$config_path" << EOF
+# Tak Playlist Downloader Configuration
+# Generated on $(date '+%Y-%m-%d %H:%M:%S')
+PLAYLIST_URL="$PLAYLIST_URL"
+OUTPUT_DIR="$OUTPUT_DIR"
+SLEEP_INTERVAL=$SLEEP_INTERVAL
+FORMAT="$FORMAT"
+QUALITY="$QUALITY"
+ENABLE_ARCHIVE=$ENABLE_ARCHIVE
+EOF
+    echo -e "${BLUE}Configuration updated in: $config_path${NC}"
+}
 
 # Set quality parameters for ffmpeg
 set_quality_params() {
@@ -50,6 +91,9 @@ show_help() {
     echo "  -f FORMAT     Target format for conversion (default: mp3)"
     echo "  -q QUALITY    Quality: low, mid, high (default: mid)"
     echo "  -h            Show this help message"
+    echo ""
+    echo "Note: This script shares configuration with Download-Playlist.sh"
+    echo "      Settings from .download_config.txt will be used if present."
 }
 
 # Parse arguments
@@ -62,6 +106,41 @@ while getopts "o:f:q:h" opt; do
         *) show_help; exit 1 ;;
     esac
 done
+
+# Track which arguments were explicitly provided
+HAS_O=0
+HAS_F=0
+HAS_Q=0
+
+for arg in "$@"; do
+    case "$arg" in
+        -o) HAS_O=1 ;;
+        -f) HAS_F=1 ;;
+        -q) HAS_Q=1 ;;
+    esac
+done
+
+# ========== LOAD SAVED CONFIGURATION ==========
+CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
+if [ -f "$CONFIG_PATH" ]; then
+    load_saved_config "$CONFIG_PATH"
+    
+    # Apply saved values only if not overridden by command line
+    if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
+        OUTPUT_DIR="$OUTPUT_DIR"
+    fi
+    if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
+        FORMAT="$FORMAT"
+    fi
+    if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
+        QUALITY="$QUALITY"
+    fi
+    
+    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_PATH${NC}"
+    echo "  Format: $FORMAT"
+    echo "  Quality: $QUALITY"
+    echo ""
+fi
 
 # Validate quality
 if [[ ! "$QUALITY" =~ ^(low|mid|high)$ ]]; then
@@ -88,10 +167,15 @@ fi
 # Set quality parameters
 set_quality_params "$QUALITY"
 
+# ========== SAVE CONFIGURATION (if any format/quality changes were made) ==========
+if [ $HAS_F -eq 1 ] || [ $HAS_Q -eq 1 ]; then
+    save_config "$CONFIG_PATH" "$FORMAT" "$QUALITY"
+fi
+
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 cd "$OUTPUT_DIR" || exit 1
 
-# Set up hidden paths with dot prefix
+# Set up hidden paths
 ARCHIVE_DIR=".archive_recovered"
 LOG_FILE=".recovered_moved.log"
 

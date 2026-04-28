@@ -1,4 +1,4 @@
-# ========== ARGUMENT PARSING (MUST BE FIRST) ========== 
+# ========== ARGUMENT PARSING ========== 
 param(
 	[string]$o,
 	[int]$t,
@@ -18,7 +18,7 @@ if (-not (Test-Path $YtDlpExe)) {
 		Invoke-WebRequest -Uri $ytDlpUrl -OutFile $YtDlpExe -UseBasicParsing
 		Write-Host "[OK] yt-dlp.exe downloaded successfully."
 	} catch {
-		Write-Host "ERROR: Failed to download yt-dlp.exe. Please check your internet connection or download manually from $ytDlpUrl"
+		Write-Host "ERROR: Failed to download yt-dlp.exe."
 		exit 1
 	}
 }
@@ -55,6 +55,7 @@ $OutputDir = Get-Location
 $SleepInterval = 11
 $Format = 'mp3'
 $Quality = 'mid'
+$ConfigFile = ".download_config.txt"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -74,18 +75,50 @@ function Show-Help {
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "  -h             Show this help message"
 	Write-Host ""
-	Write-Host "Note: This script searches archives (Wayback Machine, GhostArchive, etc.)"
-	Write-Host "      for videos that are no longer available on YouTube."
-	Write-Host "      Videos not found in any archive are marked as permanently failed."
+	Write-Host "Note: This script shares configuration with Download-Playlist.ps1"
+	Write-Host "      Settings from .download_config.txt will be used if present."
 }
 
-if ($h) { Show-Help; exit 0 }
-if ($o) { $OutputDir = $o }
-if ($t) { $SleepInterval = $t }
-if ($f) { $Format = $f }
-if ($q) { $Quality = $q }
+# ========== PARSE ARGUMENTS AND TRACK WHAT WAS PROVIDED ==========
+$HAS_O = $false
+$HAS_T = $false
+$HAS_F = $false
+$HAS_Q = $false
 
-if ($Quality -and $Quality -notin @('low','mid','high')) {
+for ($i = 0; $i -lt $args.Length; $i++) {
+	switch ($args[$i]) {
+		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
+		'-t' { $HAS_T = $true; $SleepInterval = [int]$args[$i+1] }
+		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
+		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
+		'-h' { Show-Help; exit 0 }
+	}
+}
+
+# ========== LOAD SAVED CONFIGURATION ==========
+$ConfigPath = Join-Path $OutputDir $ConfigFile
+if (Test-Path $ConfigPath) {
+	try {
+		$savedConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+		Write-Blue "Loading saved configuration from: $ConfigPath"
+		
+		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
+		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
+		if (-not $HAS_F) { $Format = $savedConfig.Format }
+		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
+		
+		Write-Green "[INFO] Using saved settings from: $ConfigPath"
+		Write-Host "  Format: $Format"
+		Write-Host "  Quality: $Quality"
+		Write-Host "  Delay: ${SleepInterval}s"
+		Write-Host ""
+	} catch {
+		Write-Yellow "Could not parse saved configuration, using defaults"
+	}
+}
+
+# Validate quality
+if ($Quality -notin @('low','mid','high')) {
 	Write-Red "ERROR: Quality must be low, mid, or high"
 	exit 1
 }
@@ -95,6 +128,67 @@ if ($SleepInterval -lt 0 -or ($SleepInterval -isnot [int])) {
 	exit 1
 }
 
+# ========== SAVE CONFIGURATION IF CHANGED ==========
+if ($HAS_F -or $HAS_Q -or $HAS_T) {
+	# Load existing config to preserve other values
+	$existingConfig = $null
+	if (Test-Path $ConfigPath) {
+		$existingConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+	}
+	
+	$config = @{
+		PlaylistUrl = if ($existingConfig) { $existingConfig.PlaylistUrl } else { "" }
+		OutputDir = $OutputDir
+		SleepInterval = $SleepInterval
+		Format = $Format
+		Quality = $Quality
+		EnableArchive = if ($existingConfig) { $existingConfig.EnableArchive } else { $false }
+		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+	}
+	
+	$config | ConvertTo-Json | Set-Content $ConfigPath
+	Write-Blue "Configuration updated in: $ConfigPath"
+}
+
+# ========== VALIDATE FORMAT ==========
+$AudioFormats = 'mp3','m4a','aac','flac','wav','opus'
+$VideoFormats = 'mp4','webm','mkv','avi','mov'
+$FormatLower = $Format.ToLower()
+if ($AudioFormats -contains $FormatLower) {
+	$DownloadType = 'audio'
+	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
+	Write-Blue "Format: $FormatLower (audio only)"
+} elseif ($VideoFormats -contains $FormatLower) {
+	$DownloadType = 'video'
+	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
+	Write-Blue "Format: $FormatLower (video + audio)"
+} else {
+	Write-Red "ERROR: Unsupported format '$Format'"
+	exit 1
+}
+
+# ========== SET QUALITY PARAMETERS ==========
+switch ($FormatLower) {
+	{ $AudioFormats -contains $_ } {
+		switch ($Quality) {
+			'low'  { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 5" }
+			'mid'  { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 2" }
+			'high' { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 0" }
+			default { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 2" }
+		}
+	}
+	{ $VideoFormats -contains $_ } {
+		switch ($Quality) {
+			'low'  { $YtdlpArgs = "-f worstvideo+worstaudio --merge-output-format $FormatLower" }
+			'mid'  { $YtdlpArgs = "-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format $FormatLower" }
+			'high' { $YtdlpArgs = "-f bestvideo+bestaudio --merge-output-format $FormatLower" }
+			default { $YtdlpArgs = "-f bestvideo+bestaudio --merge-output-format $FormatLower" }
+		}
+	}
+}
+Write-Blue "Quality: $Quality (forcing ${FormatLower} conversion)"
+
+# ========== INTERNET FUNCTIONS ==========
 function Test-Internet {
 	try {
 		$null = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction Stop
@@ -118,7 +212,7 @@ function Wait-ForInternet {
 	Start-Sleep -Seconds 5
 }
 
-# ========== HELPER FUNCTION TO REMOVE FROM FAILED LOG ==========
+# ========== HELPER FUNCTION ==========
 function Remove-FromFailedLog {
 	param([string]$video_id)
 	
@@ -129,80 +223,42 @@ function Remove-FromFailedLog {
 	
 	$newContent = $content | Where-Object { $_ -ne $video_id }
 	
-	# Handle empty content properly
 	if ($newContent -is [array]) {
 		$newContent = $newContent | Where-Object { $_ -ne "" }
 	}
 	
-	# Write back to file (handle empty case)
 	if ($newContent -and $newContent.Count -gt 0) {
 		$newContent | Set-Content $FailedLog -Force
 	} else {
-		# File becomes empty - write an empty string to clear it
 		"" | Set-Content $FailedLog -Force
 	}
 }
 
-# ========== FORMAT & QUALITY ==========
-$AudioFormats = 'mp3','m4a','aac','flac','wav','opus'
-$VideoFormats = 'mp4','webm','mkv','avi','mov'
-$FormatLower = $Format.ToLower()
-if ($AudioFormats -contains $FormatLower) {
-	$DownloadType = 'audio'
-	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
-	Write-Blue "Format: $FormatLower (audio only)"
-} elseif ($VideoFormats -contains $FormatLower) {
-	$DownloadType = 'video'
-	$OutputTemplate = '%(uploader)s - %(title)s.%(ext)s'
-	Write-Blue "Format: $FormatLower (video + audio)"
-} else {
-	Write-Red "ERROR: Unsupported format '$Format'"
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
+Push-Location $OutputDir -ErrorAction SilentlyContinue
+if ($LASTEXITCODE -ne 0) {
+	Write-Red "ERROR: Cannot access directory: $OutputDir"
 	exit 1
 }
-
-switch ($FormatLower) {
-	{ $AudioFormats -contains $_ } {
-		switch ($Quality) {
-			'low'  { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 5" }
-			'mid'  { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 2" }
-			'high' { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 0" }
-			default { $YtdlpArgs = "-f bestaudio -x --audio-format $FormatLower --audio-quality 2" }
-		}
-	}
-	{ $VideoFormats -contains $_ } {
-		switch ($Quality) {
-			'low'  { $YtdlpArgs = "-f worstvideo+worstaudio --merge-output-format $FormatLower" }
-			'mid'  { $YtdlpArgs = "-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format $FormatLower" }
-			'high' { $YtdlpArgs = "-f bestvideo+bestaudio --merge-output-format $FormatLower" }
-			default { $YtdlpArgs = "-f bestvideo+bestaudio --merge-output-format $FormatLower" }
-		}
-	}
-}
-
-# ========== CHANGE TO OUTPUT DIRECTORY ==========
-if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
-Push-Location $OutputDir
 
 # ========== LOG FILES ==========
 $DownloadedLog = ".downloaded_ids.txt"
 $FailedLog = ".failed_ids.txt"
 $PermanentlyFailedLog = ".permanently_failed_ids.txt"
+$RecoveredLog = ".recovered_ids.txt"
 $ArchiveDir = ".archive_recovered"
-foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog)) { 
+foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog, $RecoveredLog)) { 
 	if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } 
 }
 if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
 
 # ========== ARCHIVE SEARCH FUNCTIONS ==========
-
-# Function to extract title and author from HTML
 function Extract-Metadata {
 	param([string]$html)
 	
 	$title = ""
 	$author = ""
 	
-	# Try to extract title
 	if ($html -match '<title>(.*?)</title>') {
 		$title = $matches[1] -replace ' - YouTube', '' -replace ' - GhostArchive', ''
 	}
@@ -213,7 +269,6 @@ function Extract-Metadata {
 		$title = $matches[1] -replace '\\u0026', '&'
 	}
 	
-	# Try to extract author
 	if ($html -match '"ownerChannelName":"([^"]+)"') {
 		$author = $matches[1]
 	}
@@ -224,14 +279,12 @@ function Extract-Metadata {
 		$author = $matches[1]
 	}
 	
-	# Clean up
 	$title = $title -replace '^[\s-]+|[\s-]+$', ''
 	$author = $author -replace '^[\s-]+|[\s-]+$', ''
 	
 	return @{ Title = $title; Author = $author }
 }
 
-# Function to search for a video in archives
 function Search-Archive {
 	param([string]$video_id)
 	
@@ -250,7 +303,7 @@ function Search-Archive {
 				return $true
 			}
 		}
-	} catch { Write-Debug "GhostArchive check failed" }
+	} catch { }
 	
 	# Try 2: Archive.org direct
 	try {
@@ -265,7 +318,7 @@ function Search-Archive {
 				return $true
 			}
 		}
-	} catch { Write-Debug "Archive.org check failed" }
+	} catch { }
 	
 	# Try 3: Wayback Machine
 	try {
@@ -284,7 +337,7 @@ function Search-Archive {
 				return $true
 			}
 		}
-	} catch { Write-Debug "Wayback Machine check failed" }
+	} catch { }
 	
 	# Try 4: Hobune.stream
 	try {
@@ -299,7 +352,7 @@ function Search-Archive {
 				return $true
 			}
 		}
-	} catch { Write-Debug "Hobune.stream check failed" }
+	} catch { }
 	
 	Write-Red "     Not found in any archive"
 	return $false
@@ -317,6 +370,7 @@ Write-Host ""
 
 if (-not (Test-Path $FailedLog) -or (Get-Content $FailedLog | Where-Object { $_.Trim() } | Measure-Object).Count -eq 0) {
 	Write-Yellow "No .failed_ids.txt found or it's empty. Nothing to retry."
+	Pop-Location
 	exit 1
 }
 
@@ -326,13 +380,12 @@ if (-not (Test-Internet)) { Wait-ForInternet }
 $RetryList = @()
 $PermanentlyFailedCount = 0
 foreach ($video_id in Get-Content $FailedLog | Where-Object { $_.Trim() }) {
-	if (Select-String -Path $DownloadedLog -Pattern "^$video_id$" -Quiet) { 
-		continue 
-	}
+	if (Select-String -Path $DownloadedLog -Pattern "^$video_id$" -Quiet) { continue }
 	if (Select-String -Path $PermanentlyFailedLog -Pattern "^$video_id$" -Quiet) { 
 		$PermanentlyFailedCount++
 		continue 
 	}
+	if (Select-String -Path $RecoveredLog -Pattern "^$video_id$" -Quiet) { continue }
 	$RetryList += $video_id
 }
 
@@ -342,8 +395,9 @@ if ($Total -eq 0) {
 		Write-Green "All failed videos have been downloaded or marked permanently failed!"
 		Write-Yellow "Skipped $PermanentlyFailedCount permanently failed videos"
 	} else {
-		Write-Green "All failed videos have been downloaded!"
+		Write-Green "All failed videos have been downloaded or recovered!"
 	}
+	Pop-Location
 	exit 0
 }
 
@@ -457,4 +511,5 @@ if ($PermanentlyFailed -gt 0) {
 	Write-Yellow "To retry them anyway, remove their IDs from $PermanentlyFailedLog"
 }
 
+# ========== RESTORE ORIGINAL LOCATION ==========
 Pop-Location
