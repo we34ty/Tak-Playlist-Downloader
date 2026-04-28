@@ -106,15 +106,12 @@ Your Music Folder/
 	- Open the program
 	- Paste playlist URL
 	- Click "Start Download"
-2. **Enable Archive Recovery (for deleted videos)**
-	- Check "Enable Archive Recovery (-a)"
-	- Click "Start Download"
-	- Searches: GhostArchive → Archive.org → Wayback Machine → Hobune.stream
-3. **Retry Failed Downloads**
+2. **Retry Failed Downloads**
 	- Go to "Retry Failed" tab
 	- Select output directory
 	- Click "Start Retry"
-4. **Move Recovered Files**
+  - Searches: YouTube → GhostArchive → Archive.org → Wayback Machine → Hobune.stream
+3. **Move Recovered Files**
 	- Go to "Move Recovered" tab
 	- Select output directory
 	- Click "Start Move/Convert"
@@ -242,22 +239,19 @@ These can also be run directly from command line:
 ## ❓ Common Questions
 
 **Q: Can I move the executable to another folder?**
-A: Yes, but you must move ALL files together (the .exe, the script files, and the .TakData folder).
+A: Yes, but you must move ALL files together (the .exe and the script files).
 
 **Q: Why do I get "Script not found" error?**
 A: The script files (.ps1 or .sh) are missing or in the wrong folder. They must be in the same folder as the executable.
 
 **Q: Where are my downloaded songs?**
-A: In the output directory you chose. The .TakData folder is separate.
+A: In the output directory you chose along with the .TakData folder.
 
 **Q: How do I start over?**
 A: Delete the .TakData folder in your output directory.
 
 **Q: Can I pause and resume?**
 A: Yes - press Ctrl+C to stop, run the same command again to resume.
-
-**Q: Why does a console window appear?**
-A: That's the script running. It closes automatically when done.
 
 **Q: What's the .TakData folder?**
 A: Stores all logs, settings, and temporary files. It's hidden to keep your music folder clean.
