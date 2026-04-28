@@ -39,7 +39,7 @@ if (-not (Test-Path $FfmpegExe)) {
 $OutputDir = Get-Location
 $Format = 'mp3'
 $Quality = 'mid'
-$ConfigFile = ".download_config.txt"
+$TakDataDir = ".TakData"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -60,36 +60,49 @@ function Show-Help {
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "  -h             Show this help message"
 	Write-Host ""
-	Write-Host "Note: This script shares configuration with Download-Playlist.ps1"
-	Write-Host "      Settings from .download_config.txt will be used if present."
+	Write-Host "Note: Settings and logs are stored in '$TakDataDir' subfolder"
 }
 
-# ========== PARSE ARGUMENTS AND TRACK WHAT WAS PROVIDED ==========
-$HAS_O = $false
-$HAS_F = $false
-$HAS_Q = $false
-
-for ($i = 0; $i -lt $args.Length; $i++) {
-	switch ($args[$i]) {
-		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
-		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
-		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
-		'-h' { Show-Help; exit 0 }
+# ========== FUNCTION TO GET TAKDATA PATH ==========
+function Get-TakDataPath {
+	param([string]$outputDir)
+	$takDataPath = Join-Path $outputDir $TakDataDir
+	if (-not (Test-Path $takDataPath)) {
+		New-Item -ItemType Directory -Path $takDataPath -Force | Out-Null
 	}
+	return $takDataPath
 }
+
+# ========== TRACK WHICH ARGUMENTS WERE PROVIDED ==========
+$HAS_O = $PSBoundParameters.ContainsKey('o')
+$HAS_F = $PSBoundParameters.ContainsKey('f')
+$HAS_Q = $PSBoundParameters.ContainsKey('q')
+$HAS_H = $PSBoundParameters.ContainsKey('h')
+
+if ($HAS_H) { Show-Help; exit 0 }
+
+if ($HAS_O) { $OutputDir = $o }
+if ($HAS_F) { $Format = $f }
+if ($HAS_Q) { $Quality = $q }
+
+# Normalize path
+$OutputDir = $OutputDir -replace '/', '\'
 
 # ========== LOAD SAVED CONFIGURATION ==========
-$ConfigPath = Join-Path $OutputDir $ConfigFile
-if (Test-Path $ConfigPath) {
+$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+$ConfigFile = Join-Path $TakDataPath "download_config.json"
+
+$savedConfig = $null
+if (Test-Path $ConfigFile) {
 	try {
-		$savedConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-		Write-Blue "Loading saved configuration from: $ConfigPath"
+		$savedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+		Write-Blue "Loading saved configuration from: $ConfigFile"
 		
 		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
 		if (-not $HAS_F) { $Format = $savedConfig.Format }
 		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
 		
-		Write-Green "[INFO] Using saved settings from: $ConfigPath"
+		Write-Green "[INFO] Using saved settings from: $ConfigFile"
 		Write-Host "  Format: $Format"
 		Write-Host "  Quality: $Quality"
 		Write-Host ""
@@ -146,10 +159,9 @@ Write-Blue "Conversion quality: $Quality (audio: ${AudioBitrate}, ${SampleRate}H
 
 # ========== SAVE CONFIGURATION IF CHANGED ==========
 if ($HAS_F -or $HAS_Q) {
-	# Load existing config to preserve other values
 	$existingConfig = $null
-	if (Test-Path $ConfigPath) {
-		$existingConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+	if (Test-Path $ConfigFile) {
+		$existingConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 	}
 	
 	$config = @{
@@ -162,20 +174,23 @@ if ($HAS_F -or $HAS_Q) {
 		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 	}
 	
-	$config | ConvertTo-Json | Set-Content $ConfigPath
-	Write-Blue "Configuration updated in: $ConfigPath"
+	$config | ConvertTo-Json | Set-Content $ConfigFile
+	Write-Blue "Configuration updated in: $ConfigFile"
+}
+
+# ========== CREATE OUTPUT DIRECTORY ==========
+if (-not (Test-Path $OutputDir)) {
+	Write-Yellow "Directory does not exist, creating: $OutputDir"
+	New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
-Push-Location $OutputDir -ErrorAction SilentlyContinue
-if ($LASTEXITCODE -ne 0) {
-	Write-Red "ERROR: Cannot access directory: $OutputDir"
-	exit 1
-}
+Push-Location $OutputDir
 
-# ========== SET UP PATHS ==========
-$ArchiveDir = ".archive_recovered"
-$LogFile = ".recovered_moved.log"
+# ========== SET UP TAKDATA PATHS ==========
+$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+$ArchiveDir = Join-Path $TakDataPath "archive_recovered"
+$LogFile = Join-Path $TakDataPath "recovered_moved.log"
 
 # Initialize log file
 if (-not (Test-Path $LogFile)) { New-Item $LogFile -ItemType File | Out-Null }
@@ -183,8 +198,9 @@ if (-not (Test-Path $LogFile)) { New-Item $LogFile -ItemType File | Out-Null }
 Write-Green "========================================="
 Write-Green "Archive Recovery Processor"
 Write-Green "========================================="
+Write-Host "Output directory: $OutputDir"
+Write-Host "TakData directory: $TakDataPath"
 Write-Host "Source: $ArchiveDir"
-Write-Host "Destination: $OutputDir"
 Write-Host "Target format: $FormatLower"
 Write-Host "Quality: $Quality"
 Write-Host ""
@@ -296,6 +312,7 @@ Write-Host "Total files processed: $Processed"
 Write-Green "[OK] Converted to $FormatLower : $Converted"
 Write-Red "[FAILED] Failed: $Failed"
 Write-Host ""
+Write-Host "Files saved to: $OutputDir"
 Write-Host "Log saved to: $LogFile"
 
 if ($Failed -gt 0) {

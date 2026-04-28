@@ -7,7 +7,7 @@ ENABLE_ARCHIVE=false  # Default false (disabled)
 PLAYLIST_URL=""       # Required argument
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality (low/mid/high)
-CONFIG_FILE=".download_config.txt"
+TAK_DATA_DIR=".TakData"
 # ===========================================
 
 # Colors
@@ -19,40 +19,128 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Function to load saved configuration
-load_saved_config() {
-    local config_path="$1"
+# ========== PACKAGE CHECK AND INSTALLATION ==========
+check_and_install_packages() {
+    local missing_packages=()
+    local required_packages=()
     
-    if [ -f "$config_path" ]; then
-        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
-        # Source the config file (it's just KEY=VALUE format)
-        source "$config_path"
-        return 0
+    # Detect OS
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+    else
+        OS=$(uname -s)
     fi
-    return 1
+    
+    echo -e "${BLUE}Checking required packages...${NC}"
+    
+    # Check for yt-dlp
+    if ! command -v yt-dlp &> /dev/null; then
+        echo -e "${YELLOW}yt-dlp not found. Will install...${NC}"
+        required_packages+=("yt-dlp")
+    else
+        echo -e "${GREEN}✓ yt-dlp found${NC}"
+    fi
+    
+    # Check for ffmpeg
+    if ! command -v ffmpeg &> /dev/null; then
+        echo -e "${YELLOW}ffmpeg not found. Will install...${NC}"
+        required_packages+=("ffmpeg")
+    else
+        echo -e "${GREEN}✓ ffmpeg found${NC}"
+    fi
+    
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        echo -e "${YELLOW}curl not found. Will install...${NC}"
+        required_packages+=("curl")
+    else
+        echo -e "${GREEN}✓ curl found${NC}"
+    fi
+    
+    # Check for jq (required for JSON parsing)
+    if ! command -v jq &> /dev/null; then
+        echo -e "${YELLOW}jq not found. Will install...${NC}"
+        required_packages+=("jq")
+    else
+        echo -e "${GREEN}✓ jq found${NC}"
+    fi
+    
+    # Check for Deno (required for archive recovery)
+    if ! command -v deno &> /dev/null; then
+        echo -e "${YELLOW}Deno not found. Will install...${NC}"
+        INSTALL_DENO=true
+    else
+        echo -e "${GREEN}✓ Deno found${NC}"
+    fi
+    
+    # Install missing packages if any
+    if [ ${#required_packages[@]} -gt 0 ]; then
+        echo -e "${YELLOW}Installing missing packages: ${required_packages[*]}${NC}"
+        
+        case "$OS" in
+            ubuntu|debian)
+                sudo apt update
+                sudo apt install -y "${required_packages[@]}"
+                ;;
+            fedora|rhel|centos)
+                sudo dnf install -y "${required_packages[@]}"
+                ;;
+            arch|manjaro)
+                sudo pacman -S --noconfirm "${required_packages[@]}"
+                ;;
+            darwin|macos)
+                if ! command -v brew &> /dev/null; then
+                    echo -e "${RED}Homebrew not found. Please install Homebrew first:${NC}"
+                    echo ' /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                    exit 1
+                fi
+                brew install "${required_packages[@]}"
+                ;;
+            *)
+                echo -e "${RED}Unsupported OS. Please install manually: ${required_packages[*]}${NC}"
+                exit 1
+                ;;
+        esac
+        
+        # Verify installations
+        for pkg in "${required_packages[@]}"; do
+            if ! command -v "$pkg" &> /dev/null; then
+                echo -e "${RED}Failed to install $pkg. Please install manually.${NC}"
+                exit 1
+            fi
+        done
+    fi
+    
+    # Install yt-dlp via pip if package manager didn't have it
+    if [[ " ${required_packages[*]} " =~ "yt-dlp" ]] && ! command -v yt-dlp &> /dev/null; then
+        echo -e "${YELLOW}Installing yt-dlp via pip...${NC}"
+        pip3 install yt-dlp --break-system-packages 2>/dev/null || pip3 install yt-dlp
+    fi
+    
+    # Install Deno if needed
+    if [ "$INSTALL_DENO" = true ]; then
+        echo -e "${YELLOW}Installing Deno...${NC}"
+        curl -fsSL https://deno.land/install.sh | sh
+        export DENO_INSTALL="$HOME/.deno"
+        export PATH="$DENO_INSTALL/bin:$PATH"
+        echo 'export PATH="$HOME/.deno/bin:$PATH"' >> "$HOME/.bashrc"
+        echo -e "${GREEN}Deno installed. Please restart your terminal or run: source ~/.bashrc${NC}"
+    fi
+    
+    echo -e "${GREEN}All required packages are installed!${NC}"
+    echo ""
 }
 
-# Function to save configuration
-save_config() {
-    local config_path="$1"
-    local playlist_url="$2"
-    local output_dir="$3"
-    local sleep_interval="$4"
-    local format="$5"
-    local quality="$6"
-    local enable_archive="$7"
-    
-    cat > "$config_path" << EOF
-# Tak Playlist Downloader Configuration
-# Generated on $(date '+%Y-%m-%d %H:%M:%S')
-PLAYLIST_URL="$playlist_url"
-OUTPUT_DIR="$output_dir"
-SLEEP_INTERVAL=$sleep_interval
-FORMAT="$format"
-QUALITY="$quality"
-ENABLE_ARCHIVE=$enable_archive
-EOF
-    echo -e "${BLUE}Configuration saved to: $config_path${NC}"
+# Run package check
+check_and_install_packages
+
+# Function to get TakData directory path
+get_takdata_path() {
+    local output_dir="$1"
+    local takdata_path="${output_dir}/${TAK_DATA_DIR}"
+    mkdir -p "$takdata_path"
+    echo "$takdata_path"
 }
 
 # Clean playlist URL
@@ -159,8 +247,7 @@ show_help() {
     echo "  -a            Enable archive recovery for deleted videos (Linux only)"
     echo "  -h            Show this help"
     echo ""
-    echo "Note: Settings are saved in .download_config.txt in the output directory."
-    echo "      Subsequent runs without -p will use saved playlist URL."
+    echo "Note: Settings and logs are stored in '${TAK_DATA_DIR}' subfolder"
 }
 
 # Parse arguments
@@ -199,31 +286,20 @@ done
 
 # ========== CHECK FOR SAVED CONFIGURATION IF NO -p PROVIDED ==========
 if [ $HAS_P -eq 0 ]; then
-    # Determine config file path
-    CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
-    if [ -f "$CONFIG_PATH" ]; then
-        # Load saved configuration
-        source "$CONFIG_PATH"
+    # Determine TakData path
+    TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
+    CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+    
+    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        PLAYLIST_URL=$(jq -r '.PlaylistUrl' "$CONFIG_FILE")
+        [ $HAS_O -eq 0 ] && OUTPUT_DIR=$(jq -r '.OutputDir' "$CONFIG_FILE")
+        [ $HAS_T -eq 0 ] && SLEEP_INTERVAL=$(jq -r '.SleepInterval' "$CONFIG_FILE")
+        [ $HAS_F -eq 0 ] && FORMAT=$(jq -r '.Format' "$CONFIG_FILE")
+        [ $HAS_Q -eq 0 ] && QUALITY=$(jq -r '.Quality' "$CONFIG_FILE")
+        [ $HAS_A -eq 0 ] && ENABLE_ARCHIVE=$(jq -r '.EnableArchive' "$CONFIG_FILE")
+        LAST_UPDATED=$(jq -r '.LastUpdated' "$CONFIG_FILE")
         
-        echo -e "${GREEN}[INFO] Found saved configuration from: $(grep '^#' "$CONFIG_PATH" | head -1 | sed 's/# Generated on //')${NC}"
-        
-        # Apply saved values only if not overridden by command line
-        if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
-            OUTPUT_DIR="$OUTPUT_DIR"
-        fi
-        if [ $HAS_T -eq 0 ] && [ -n "$SLEEP_INTERVAL" ]; then
-            SLEEP_INTERVAL="$SLEEP_INTERVAL"
-        fi
-        if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
-            FORMAT="$FORMAT"
-        fi
-        if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
-            QUALITY="$QUALITY"
-        fi
-        if [ $HAS_A -eq 0 ] && [ -n "$ENABLE_ARCHIVE" ]; then
-            ENABLE_ARCHIVE="$ENABLE_ARCHIVE"
-        fi
-        
+        echo -e "${GREEN}[INFO] Found saved configuration from: $LAST_UPDATED${NC}"
         echo -e "${GREEN}[INFO] Using saved settings:${NC}"
         echo "  Playlist URL: $PLAYLIST_URL"
         echo "  Format: $FORMAT"
@@ -231,6 +307,10 @@ if [ $HAS_P -eq 0 ]; then
         echo "  Delay: ${SLEEP_INTERVAL}s"
         echo "  Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ON" || echo "OFF" )"
         echo ""
+    elif [ -f "$CONFIG_FILE" ] && ! command -v jq &>/dev/null; then
+        echo -e "${RED}ERROR: jq is required to parse saved configuration${NC}"
+        echo "Please install jq: sudo apt install jq"
+        exit 1
     else
         echo -e "${RED}ERROR: Playlist URL is required on first run${NC}"
         show_help
@@ -281,24 +361,42 @@ mkdir -p "$OUTPUT_DIR"
 
 # ========== SAVE CONFIGURATION (if -p was provided) ==========
 if [ $HAS_P -eq 1 ]; then
-    CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
-    save_config "$CONFIG_PATH" "$PLAYLIST_URL" "$OUTPUT_DIR" "$SLEEP_INTERVAL" "$FORMAT" "$QUALITY" "$ENABLE_ARCHIVE"
+    TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
+    mkdir -p "$TAK_DATA_PATH"
+    CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+    
+    cat > "$CONFIG_FILE" << EOF
+{
+    "PlaylistUrl": "$PLAYLIST_URL",
+    "OutputDir": "$OUTPUT_DIR",
+    "SleepInterval": $SLEEP_INTERVAL,
+    "Format": "$FORMAT",
+    "Quality": "$QUALITY",
+    "EnableArchive": $ENABLE_ARCHIVE,
+    "LastUpdated": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    echo -e "${BLUE}Configuration saved to: $CONFIG_FILE${NC}"
 fi
 
 cd "$OUTPUT_DIR" || exit 1
 
-# Set up hidden log files
-LOG_FILE=".downloaded_ids.txt"
-FAILED_LOG=".failed_ids.txt"
-RECOVERED_LOG=".recovered_ids.txt"
-PERMANENTLY_FAILED_LOG=".permanently_failed_ids.txt"
-ARCHIVE_DIR=".archive_recovered"
-VIDEO_IDS_FILE=".playlist_videos.txt"
+# ========== SET UP TAKDATA DIRECTORY AND LOG FILES ==========
+TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
+mkdir -p "$TAK_DATA_PATH"
+
+LOG_FILE="${TAK_DATA_PATH}/downloaded_ids.txt"
+FAILED_LOG="${TAK_DATA_PATH}/failed_ids.txt"
+RECOVERED_LOG="${TAK_DATA_PATH}/recovered_ids.txt"
+PERMANENTLY_FAILED_LOG="${TAK_DATA_PATH}/permanently_failed_ids.txt"
+ARCHIVE_DIR="${TAK_DATA_PATH}/archive_recovered"
+VIDEO_IDS_FILE="${TAK_DATA_PATH}/playlist_videos.txt"
 
 # Initialize files
 touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG" "$PERMANENTLY_FAILED_LOG"
 
-echo -e "${BLUE}Log files: $LOG_FILE, $PERMANENTLY_FAILED_LOG, etc.${NC}"
+echo -e "${BLUE}TakData directory: $TAK_DATA_PATH${NC}"
+echo -e "${BLUE}Log files stored in TakData subfolder${NC}"
 
 # Simple mark functions
 mark_downloaded() { 
@@ -384,9 +482,10 @@ search_archive() {
 
 # ========== EXTRACT VIDEO IDs ==========
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}Tak Playlist Downloader${NC}"
+echo -e "${GREEN}YouTube Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
+echo "TakData directory: $TAK_DATA_PATH"
 echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
 echo "Quality: $QUALITY"
 echo "Delay: ${SLEEP_INTERVAL}s"
@@ -479,14 +578,14 @@ while IFS= read -r video_id; do
         continue
     fi
     
-    # Check if already downloaded (using -- to handle hyphens)
+    # Check if already downloaded
     if grep -Fxq -- "$video_id" "$LOG_FILE" 2>/dev/null; then
         echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (already downloaded)"
         SKIPPED_ALREADY=$((SKIPPED_ALREADY + 1))
         continue
     fi
     
-    # Check if already recovered (using -- to handle hyphens)
+    # Check if already recovered
     if grep -Fxq -- "$video_id" "$RECOVERED_LOG" 2>/dev/null; then
         echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (already recovered)"
         SKIPPED_ALREADY=$((SKIPPED_ALREADY + 1))
@@ -584,3 +683,4 @@ else
 fi
 echo ""
 echo "Files saved to: $OUTPUT_DIR"
+echo "Settings and logs saved to: $TAK_DATA_PATH"

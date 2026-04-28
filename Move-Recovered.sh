@@ -4,7 +4,7 @@
 OUTPUT_DIR="$(pwd)"  # Default to current directory
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality for conversion
-CONFIG_FILE=".download_config.txt"
+TAK_DATA_DIR=".TakData"
 # ===========================================
 
 # Colors
@@ -15,48 +15,16 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# Function to get TakData directory path
+get_takdata_path() {
+    local output_dir="$1"
+    local takdata_path="${output_dir}/${TAK_DATA_DIR}"
+    mkdir -p "$takdata_path"
+    echo "$takdata_path"
+}
+
 # Disable exit on error
 set +e
-
-# Function to load saved configuration
-load_saved_config() {
-    local config_path="$1"
-    
-    if [ -f "$config_path" ]; then
-        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
-        source "$config_path"
-        return 0
-    fi
-    return 1
-}
-
-# Function to save configuration
-save_config() {
-    local config_path="$1"
-    local format="$2"
-    local quality="$3"
-    
-    # Load existing config, then update specific values
-    if [ -f "$config_path" ]; then
-        source "$config_path"
-    fi
-    
-    # Update with new values (only if provided)
-    [ -n "$format" ] && FORMAT="$format"
-    [ -n "$quality" ] && QUALITY="$quality"
-    
-    cat > "$config_path" << EOF
-# Tak Playlist Downloader Configuration
-# Generated on $(date '+%Y-%m-%d %H:%M:%S')
-PLAYLIST_URL="$PLAYLIST_URL"
-OUTPUT_DIR="$OUTPUT_DIR"
-SLEEP_INTERVAL=$SLEEP_INTERVAL
-FORMAT="$FORMAT"
-QUALITY="$QUALITY"
-ENABLE_ARCHIVE=$ENABLE_ARCHIVE
-EOF
-    echo -e "${BLUE}Configuration updated in: $config_path${NC}"
-}
 
 # Set quality parameters for ffmpeg
 set_quality_params() {
@@ -93,7 +61,7 @@ show_help() {
     echo "  -h            Show this help message"
     echo ""
     echo "Note: This script shares configuration with Download-Playlist.sh"
-    echo "      Settings from .download_config.txt will be used if present."
+    echo "      Settings and logs are stored in '${TAK_DATA_DIR}' subfolder"
 }
 
 # Parse arguments
@@ -121,25 +89,24 @@ for arg in "$@"; do
 done
 
 # ========== LOAD SAVED CONFIGURATION ==========
-CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
-if [ -f "$CONFIG_PATH" ]; then
-    load_saved_config "$CONFIG_PATH"
+TAK_DATA_PATH=$(get_takdata_path "$OUTPUT_DIR")
+CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+
+if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+    echo -e "${BLUE}Loading saved configuration from: $CONFIG_FILE${NC}"
     
-    # Apply saved values only if not overridden by command line
-    if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
-        OUTPUT_DIR="$OUTPUT_DIR"
-    fi
-    if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
-        FORMAT="$FORMAT"
-    fi
-    if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
-        QUALITY="$QUALITY"
-    fi
+    [ $HAS_O -eq 0 ] && OUTPUT_DIR=$(jq -r '.OutputDir' "$CONFIG_FILE")
+    [ $HAS_F -eq 0 ] && FORMAT=$(jq -r '.Format' "$CONFIG_FILE")
+    [ $HAS_Q -eq 0 ] && QUALITY=$(jq -r '.Quality' "$CONFIG_FILE")
     
-    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_PATH${NC}"
+    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_FILE${NC}"
     echo "  Format: $FORMAT"
     echo "  Quality: $QUALITY"
     echo ""
+elif [ -f "$CONFIG_FILE" ] && ! command -v jq &>/dev/null; then
+    echo -e "${RED}ERROR: jq is required to parse saved configuration${NC}"
+    echo "Please install jq: sudo apt install jq"
+    exit 1
 fi
 
 # Validate quality
@@ -167,25 +134,54 @@ fi
 # Set quality parameters
 set_quality_params "$QUALITY"
 
-# ========== SAVE CONFIGURATION (if any format/quality changes were made) ==========
+# ========== SAVE CONFIGURATION IF CHANGED ==========
 if [ $HAS_F -eq 1 ] || [ $HAS_Q -eq 1 ]; then
-    save_config "$CONFIG_PATH" "$FORMAT" "$QUALITY"
+    TAK_DATA_PATH=$(get_takdata_path "$OUTPUT_DIR")
+    CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+    
+    # Load existing config to preserve other values
+    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        PLAYLIST_URL=$(jq -r '.PlaylistUrl' "$CONFIG_FILE")
+        SLEEP_INTERVAL=$(jq -r '.SleepInterval' "$CONFIG_FILE")
+        ENABLE_ARCHIVE=$(jq -r '.EnableArchive' "$CONFIG_FILE")
+    else
+        PLAYLIST_URL=""
+        SLEEP_INTERVAL=11
+        ENABLE_ARCHIVE="false"
+    fi
+    
+    cat > "$CONFIG_FILE" << EOF
+{
+    "PlaylistUrl": "$PLAYLIST_URL",
+    "OutputDir": "$OUTPUT_DIR",
+    "SleepInterval": $SLEEP_INTERVAL,
+    "Format": "$FORMAT",
+    "Quality": "$QUALITY",
+    "EnableArchive": $ENABLE_ARCHIVE,
+    "LastUpdated": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    echo -e "${BLUE}Configuration updated in: $CONFIG_FILE${NC}"
 fi
 
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 cd "$OUTPUT_DIR" || exit 1
 
-# Set up hidden paths
-ARCHIVE_DIR=".archive_recovered"
-LOG_FILE=".recovered_moved.log"
+# ========== SET UP TAKDATA PATHS ==========
+TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
+mkdir -p "$TAK_DATA_PATH"
+
+ARCHIVE_DIR="${TAK_DATA_PATH}/archive_recovered"
+LOG_FILE="${TAK_DATA_PATH}/recovered_moved.log"
 
 touch "$LOG_FILE"
 
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Archive Recovery Processor${NC}"
 echo -e "${GREEN}=========================================${NC}"
+echo "Output directory: $OUTPUT_DIR"
+echo "TakData directory: $TAK_DATA_PATH"
 echo "Source: $ARCHIVE_DIR"
-echo "Destination: $OUTPUT_DIR"
 echo "Target format: $FORMAT_LOWER"
 echo "Quality: $QUALITY"
 echo ""
@@ -305,6 +301,7 @@ echo "Total files processed: $PROCESSED"
 echo -e "${GREEN}✓ Converted to $FORMAT_LOWER: $CONVERTED${NC}"
 echo -e "${RED}✗ Failed: $FAILED${NC}"
 echo ""
+echo "Files saved to: $OUTPUT_DIR"
 echo "Log saved to: $LOG_FILE"
 
 if [ $FAILED -gt 0 ]; then

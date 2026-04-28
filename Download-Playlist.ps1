@@ -8,6 +8,7 @@ param(
 	[switch]$a,
 	[switch]$h
 )
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 # ========== FFMPEG CHECK & AUTO-DOWNLOAD ==========
@@ -62,7 +63,7 @@ $Format = 'mp3'
 $Quality = 'mid'
 $PlaylistUrl = $null
 $EnableArchive = $false
-$ConfigFile = ".download_config.txt"
+$TakDataDir = ".TakData"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -75,7 +76,7 @@ function Write-Magenta { Write-Host $args -ForegroundColor Magenta }
 function Show-Help {
 	Write-Host "Usage: .\Download-Playlist.ps1 -p <PLAYLIST_URL> [-o <OUTPUT_DIR>] [-t <SECONDS>] [-f <FORMAT>] [-q <QUALITY>] [-a] [-h]" -ForegroundColor Cyan
 	Write-Host ""
-	Write-Host "Required (first run only):"
+	Write-Host "Required:"
 	Write-Host "  -p <URL>        YouTube playlist URL"
 	Write-Host ""
 	Write-Host "Options:"
@@ -88,82 +89,70 @@ function Show-Help {
 	Write-Host "  -a              Enable archive recovery for deleted videos"
 	Write-Host "  -h             Show this help"
 	Write-Host ""
-	Write-Host "Note: Settings are saved in .download_config.txt in the output directory."
-	Write-Host "      Subsequent runs without -p will use saved playlist URL."
-	Write-Host "      Retry-Failed.ps1 and Move-Recovered.ps1 share this configuration."
+	Write-Host "Note: Settings and logs are stored in '$TakDataDir' subfolder"
 }
 
-# ========== FUNCTION TO LOAD SAVED CONFIGURATION ==========
-function Load-SavedConfig {
-	param([string]$configPath)
-	
-	if (Test-Path $configPath) {
-		Write-Blue "Loading saved configuration from: $configPath"
-		$config = Get-Content $configPath -Raw | ConvertFrom-Json
-		return $config
+# ========== FUNCTION TO GET TAKDATA PATH ==========
+function Get-TakDataPath {
+	param([string]$outputDir)
+	$takDataPath = Join-Path $outputDir $TakDataDir
+	if (-not (Test-Path $takDataPath)) {
+		New-Item -ItemType Directory -Path $takDataPath -Force | Out-Null
 	}
-	return $null
-}
-
-# ========== FUNCTION TO SAVE CONFIGURATION ==========
-function Save-Config {
-	param(
-		[string]$configPath,
-		[string]$playlistUrl,
-		[string]$outputDir,
-		[int]$sleepInterval,
-		[string]$format,
-		[string]$quality,
-		[bool]$enableArchive
-	)
-	
-	$config = @{
-		PlaylistUrl = $playlistUrl
-		OutputDir = $outputDir
-		SleepInterval = $sleepInterval
-		Format = $format
-		Quality = $quality
-		EnableArchive = $enableArchive
-		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-	}
-	
-	$config | ConvertTo-Json | Set-Content $configPath
-	Write-Blue "Configuration saved to: $configPath"
+	return $takDataPath
 }
 
 # ========== PARSE COMMAND LINE ARGUMENTS ==========
-$HAS_P = $false
-$HAS_O = $false
-$HAS_T = $false
-$HAS_F = $false
-$HAS_Q = $false
-$HAS_A = $false
+$HAS_P = $PSBoundParameters.ContainsKey('p')
+$HAS_O = $PSBoundParameters.ContainsKey('o')
+$HAS_T = $PSBoundParameters.ContainsKey('t')
+$HAS_F = $PSBoundParameters.ContainsKey('f')
+$HAS_Q = $PSBoundParameters.ContainsKey('q')
+$HAS_A = $PSBoundParameters.ContainsKey('a')
 
-# Parse manually to track which arguments were provided
-$argList = @($MyInvocation.MyCommand.Path) + $args
-for ($i = 0; $i -lt $args.Length; $i++) {
-	switch ($args[$i]) {
-		'-p' { $HAS_P = $true; $PlaylistUrl = $args[$i+1] }
-		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
-		'-t' { $HAS_T = $true; $SleepInterval = [int]$args[$i+1] }
-		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
-		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
-		'-a' { $HAS_A = $true; $EnableArchive = $true }
-		'-h' { Show-Help; exit 0 }
+if ($HAS_P) { $PlaylistUrl = $p }
+if ($HAS_O) { $OutputDir = $o }
+if ($HAS_T) { $SleepInterval = $t }
+if ($HAS_F) { $Format = $f }
+if ($HAS_Q) { $Quality = $q }
+if ($HAS_A) { $EnableArchive = $a }
+
+# Normalize path
+$OutputDir = $OutputDir -replace '/', '\'
+
+# ========== IF -p WAS PROVIDED, USE IT AND SAVE CONFIG ==========
+if ($HAS_P) {
+	Write-Green "[INFO] Using provided playlist URL"
+	
+	# Create output directory if needed
+	if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+	
+	# Get TakData directory path
+	$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+	$ConfigFile = Join-Path $TakDataPath "download_config.json"
+	
+	# Save configuration
+	$config = @{
+		PlaylistUrl = $PlaylistUrl
+		OutputDir = $OutputDir
+		SleepInterval = $SleepInterval
+		Format = $Format
+		Quality = $Quality
+		EnableArchive = $EnableArchive
+		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 	}
+	$config | ConvertTo-Json | Set-Content $ConfigFile
+	Write-Blue "Configuration saved to: $ConfigFile"
 }
-
-# ========== CHECK FOR SAVED CONFIGURATION IF NO -p PROVIDED ==========
-if (-not $HAS_P) {
-	$configPathToCheck = Join-Path (Get-Location) $ConfigFile
-	if ($HAS_O) {
-		$configPathToCheck = Join-Path $OutputDir $ConfigFile
-	}
+else {
+	# Try to load saved configuration
+	$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+	$ConfigFile = Join-Path $TakDataPath "download_config.json"
 	
-	$savedConfig = Load-SavedConfig -configPath $configPathToCheck
-	
-	if ($savedConfig) {
+	if (Test-Path $ConfigFile) {
+		$savedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 		Write-Green "[INFO] Found saved configuration from: $($savedConfig.LastUpdated)"
+		
 		$PlaylistUrl = $savedConfig.PlaylistUrl
 		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
 		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
@@ -185,6 +174,7 @@ if (-not $HAS_P) {
 	}
 }
 
+# Validate required values
 if (-not $PlaylistUrl) {
 	Write-Red "ERROR: Playlist URL is required"
 	Show-Help
@@ -200,6 +190,32 @@ if ($SleepInterval -lt 0 -or ($SleepInterval -isnot [int])) {
 	Write-Red "ERROR: Sleep interval must be a number"
 	exit 1
 }
+
+# Clean URL (remove tracking parameters)
+$PlaylistUrl = $PlaylistUrl -replace '&si=[^&]*', '' -replace '\?si=[^&]*', ''
+
+# ========== CREATE OUTPUT DIRECTORY ==========
+if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
+Push-Location $OutputDir
+
+# ========== CREATE TAKDATA DIRECTORY AND SET LOG FILES ==========
+$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+$DownloadedLog = Join-Path $TakDataPath "downloaded_ids.txt"
+$FailedLog = Join-Path $TakDataPath "failed_ids.txt"
+$PermanentlyFailedLog = Join-Path $TakDataPath "permanently_failed_ids.txt"
+$RecoveredLog = Join-Path $TakDataPath "recovered_ids.txt"
+$VideoIdsFile = Join-Path $TakDataPath "playlist_videos.txt"
+$ArchiveDir = Join-Path $TakDataPath "archive_recovered"
+
+foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog, $RecoveredLog)) { 
+	if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } 
+}
+if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
+
+Write-Blue "TakData directory: $TakDataPath"
+Write-Blue "Log files stored in TakData subfolder"
 
 # ========== INTERNET CHECK ==========
 function Test-Internet {
@@ -230,7 +246,7 @@ function Wait-ForInternet {
 	Start-Sleep -Seconds 5
 }
 
-# ========== HELPER FUNCTION TO REMOVE FROM FAILED LOG ==========
+# ========== HELPER FUNCTIONS ==========
 function Remove-FromFailedLog {
 	param([string]$video_id)
 	
@@ -328,7 +344,6 @@ function Search-Archive {
 	
 	Write-Blue "  -> Searching archives for $video_id..."
 	
-	$ArchiveDir = ".archive_recovered"
 	if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
 	
 	# Try 1: GhostArchive
@@ -399,39 +414,12 @@ function Search-Archive {
 	return $false
 }
 
-# ========== CREATE OUTPUT DIRECTORY ==========
-if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
-
-# ========== SAVE CONFIGURATION (if -p was provided) ==========
-if ($HAS_P) {
-	$configFilePath = Join-Path $OutputDir $ConfigFile
-	Save-Config -configPath $configFilePath `
-		-playlistUrl $PlaylistUrl `
-		-outputDir $OutputDir `
-		-sleepInterval $SleepInterval `
-		-format $Format `
-		-quality $Quality `
-		-enableArchive $EnableArchive
-}
-
-# ========== CHANGE TO OUTPUT DIRECTORY ==========
-Push-Location $OutputDir
-
-# ========== LOG FILES ==========
-$DownloadedLog = ".downloaded_ids.txt"
-$FailedLog = ".failed_ids.txt"
-$PermanentlyFailedLog = ".permanently_failed_ids.txt"
-$VideoIdsFile = ".playlist_videos.txt"
-$ArchiveDir = ".archive_recovered"
-foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog)) { 
-	if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } 
-}
-
 # ========== EXTRACT VIDEO IDS ==========
 Write-Green "========================================="
 Write-Green "Tak Playlist Downloader"
 Write-Green "========================================="
 Write-Host "Output directory: $OutputDir"
+Write-Host "TakData directory: $TakDataPath"
 Write-Host "Format: $FormatLower ($DownloadType)"
 Write-Host "Quality: $Quality"
 Write-Host "Delay: ${SleepInterval}s"
@@ -444,7 +432,7 @@ Write-Blue "Fetching playlist..."
 Remove-Item $VideoIdsFile -ErrorAction SilentlyContinue
 & $YtDlpExe --cookies-from-browser firefox --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
 if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
-	& $YtDlpExe --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s)" $PlaylistUrl | Set-Content $VideoIdsFile
+	& $YtDlpExe --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
 }
 if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
 	Write-Red "ERROR: Could not extract video IDs"
@@ -615,6 +603,7 @@ if ($EnableArchive) {
 }
 Write-Host ""
 Write-Host "Files saved to: $OutputDir"
+Write-Host "Settings and logs saved to: $TakDataPath"
 Write-Host ""
 
 if ($EnableArchive) {

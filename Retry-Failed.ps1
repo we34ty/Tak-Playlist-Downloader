@@ -55,7 +55,7 @@ $OutputDir = Get-Location
 $SleepInterval = 11
 $Format = 'mp3'
 $Quality = 'mid'
-$ConfigFile = ".download_config.txt"
+$TakDataDir = ".TakData"
 
 # ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
@@ -75,39 +75,53 @@ function Show-Help {
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
 	Write-Host "  -h             Show this help message"
 	Write-Host ""
-	Write-Host "Note: This script shares configuration with Download-Playlist.ps1"
-	Write-Host "      Settings from .download_config.txt will be used if present."
+	Write-Host "Note: Settings and logs are stored in '$TakDataDir' subfolder"
 }
 
-# ========== PARSE ARGUMENTS AND TRACK WHAT WAS PROVIDED ==========
-$HAS_O = $false
-$HAS_T = $false
-$HAS_F = $false
-$HAS_Q = $false
-
-for ($i = 0; $i -lt $args.Length; $i++) {
-	switch ($args[$i]) {
-		'-o' { $HAS_O = $true; $OutputDir = $args[$i+1] }
-		'-t' { $HAS_T = $true; $SleepInterval = [int]$args[$i+1] }
-		'-f' { $HAS_F = $true; $Format = $args[$i+1] }
-		'-q' { $HAS_Q = $true; $Quality = $args[$i+1] }
-		'-h' { Show-Help; exit 0 }
+# ========== FUNCTION TO GET TAKDATA PATH ==========
+function Get-TakDataPath {
+	param([string]$outputDir)
+	$takDataPath = Join-Path $outputDir $TakDataDir
+	if (-not (Test-Path $takDataPath)) {
+		New-Item -ItemType Directory -Path $takDataPath -Force | Out-Null
 	}
+	return $takDataPath
 }
+
+# ========== TRACK WHICH ARGUMENTS WERE PROVIDED ==========
+$HAS_O = $PSBoundParameters.ContainsKey('o')
+$HAS_T = $PSBoundParameters.ContainsKey('t')
+$HAS_F = $PSBoundParameters.ContainsKey('f')
+$HAS_Q = $PSBoundParameters.ContainsKey('q')
+$HAS_H = $PSBoundParameters.ContainsKey('h')
+
+if ($HAS_H) { Show-Help; exit 0 }
+
+if ($HAS_O) { $OutputDir = $o }
+if ($HAS_T) { $SleepInterval = $t }
+if ($HAS_F) { $Format = $f }
+if ($HAS_Q) { $Quality = $q }
+
+# Normalize path
+$OutputDir = $OutputDir -replace '/', '\'
+
+# ========== GET TAKDATA PATH ==========
+$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+$ConfigFile = Join-Path $TakDataPath "download_config.json"
 
 # ========== LOAD SAVED CONFIGURATION ==========
-$ConfigPath = Join-Path $OutputDir $ConfigFile
-if (Test-Path $ConfigPath) {
+$savedConfig = $null
+if (Test-Path $ConfigFile) {
 	try {
-		$savedConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-		Write-Blue "Loading saved configuration from: $ConfigPath"
+		$savedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+		Write-Blue "Loading saved configuration from: $ConfigFile"
 		
 		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
 		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
 		if (-not $HAS_F) { $Format = $savedConfig.Format }
 		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
 		
-		Write-Green "[INFO] Using saved settings from: $ConfigPath"
+		Write-Green "[INFO] Using saved settings from: $ConfigFile"
 		Write-Host "  Format: $Format"
 		Write-Host "  Quality: $Quality"
 		Write-Host "  Delay: ${SleepInterval}s"
@@ -117,7 +131,7 @@ if (Test-Path $ConfigPath) {
 	}
 }
 
-# Validate quality
+# Validate values
 if ($Quality -notin @('low','mid','high')) {
 	Write-Red "ERROR: Quality must be low, mid, or high"
 	exit 1
@@ -130,10 +144,9 @@ if ($SleepInterval -lt 0 -or ($SleepInterval -isnot [int])) {
 
 # ========== SAVE CONFIGURATION IF CHANGED ==========
 if ($HAS_F -or $HAS_Q -or $HAS_T) {
-	# Load existing config to preserve other values
 	$existingConfig = $null
-	if (Test-Path $ConfigPath) {
-		$existingConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+	if (Test-Path $ConfigFile) {
+		$existingConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 	}
 	
 	$config = @{
@@ -146,8 +159,8 @@ if ($HAS_F -or $HAS_Q -or $HAS_T) {
 		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 	}
 	
-	$config | ConvertTo-Json | Set-Content $ConfigPath
-	Write-Blue "Configuration updated in: $ConfigPath"
+	$config | ConvertTo-Json | Set-Content $ConfigFile
+	Write-Blue "Configuration updated in: $ConfigFile"
 }
 
 # ========== VALIDATE FORMAT ==========
@@ -234,23 +247,30 @@ function Remove-FromFailedLog {
 	}
 }
 
-# ========== CHANGE TO OUTPUT DIRECTORY ==========
-Push-Location $OutputDir -ErrorAction SilentlyContinue
-if ($LASTEXITCODE -ne 0) {
-	Write-Red "ERROR: Cannot access directory: $OutputDir"
-	exit 1
+# ========== CREATE OUTPUT DIRECTORY ==========
+if (-not (Test-Path $OutputDir)) {
+	Write-Yellow "Directory does not exist, creating: $OutputDir"
+	New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-# ========== LOG FILES ==========
-$DownloadedLog = ".downloaded_ids.txt"
-$FailedLog = ".failed_ids.txt"
-$PermanentlyFailedLog = ".permanently_failed_ids.txt"
-$RecoveredLog = ".recovered_ids.txt"
-$ArchiveDir = ".archive_recovered"
+# ========== CHANGE TO OUTPUT DIRECTORY ==========
+Push-Location $OutputDir
+
+# ========== SET UP LOG FILES IN TAKDATA ==========
+$TakDataPath = Get-TakDataPath -outputDir $OutputDir
+$DownloadedLog = Join-Path $TakDataPath "downloaded_ids.txt"
+$FailedLog = Join-Path $TakDataPath "failed_ids.txt"
+$PermanentlyFailedLog = Join-Path $TakDataPath "permanently_failed_ids.txt"
+$RecoveredLog = Join-Path $TakDataPath "recovered_ids.txt"
+$ArchiveDir = Join-Path $TakDataPath "archive_recovered"
+
 foreach ($file in @($DownloadedLog, $FailedLog, $PermanentlyFailedLog, $RecoveredLog)) { 
 	if (-not (Test-Path $file)) { New-Item $file -ItemType File | Out-Null } 
 }
 if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
+
+Write-Blue "TakData directory: $TakDataPath"
+Write-Blue "Log files stored in TakData subfolder"
 
 # ========== ARCHIVE SEARCH FUNCTIONS ==========
 function Extract-Metadata {
@@ -363,13 +383,14 @@ Write-Green "========================================="
 Write-Green "Retry Failed Downloads with Archive Search"
 Write-Green "========================================="
 Write-Host "Output directory: $OutputDir"
+Write-Host "TakData directory: $TakDataPath"
 Write-Host "Format: $FormatLower ($DownloadType)"
 Write-Host "Quality: $Quality"
 Write-Host "Delay between retries: ${SleepInterval}s"
 Write-Host ""
 
 if (-not (Test-Path $FailedLog) -or (Get-Content $FailedLog | Where-Object { $_.Trim() } | Measure-Object).Count -eq 0) {
-	Write-Yellow "No .failed_ids.txt found or it's empty. Nothing to retry."
+	Write-Yellow "No failed_ids.txt found or it's empty. Nothing to retry."
 	Pop-Location
 	exit 1
 }
@@ -501,6 +522,9 @@ Write-Green "========================================="
 Write-Green "Downloaded from YouTube: $Success"
 Write-Green "Recovered from archives: $Recovered"
 Write-Yellow "Permanently failed: $PermanentlyFailed"
+Write-Host ""
+Write-Host "Files saved to: $OutputDir"
+Write-Host "Settings and logs saved to: $TakDataPath"
 Write-Host ""
 Write-Host "Downloaded log: $DownloadedLog"
 Write-Host "Failed log: $FailedLog"

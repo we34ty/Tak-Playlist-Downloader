@@ -5,7 +5,7 @@ OUTPUT_DIR="$(pwd)"  # Default to current directory
 SLEEP_INTERVAL=11     # Default 11 seconds
 FORMAT="mp3"          # Default format
 QUALITY="mid"         # Default quality
-CONFIG_FILE=".download_config.txt"
+TAK_DATA_DIR=".TakData"
 # ===========================================
 
 # Colors
@@ -17,47 +17,12 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Function to load saved configuration
-load_saved_config() {
-    local config_path="$1"
-    
-    if [ -f "$config_path" ]; then
-        echo -e "${BLUE}Loading saved configuration from: $config_path${NC}"
-        source "$config_path"
-        return 0
-    fi
-    return 1
-}
-
-# Function to save configuration
-save_config() {
-    local config_path="$1"
-    local format="$2"
-    local quality="$3"
-    local sleep_interval="$4"
-    
-    # Only update format and quality in config, preserve other values
-    if [ -f "$config_path" ]; then
-        # Load existing config, then update specific values
-        source "$config_path"
-    fi
-    
-    # Update with new values (only if provided)
-    [ -n "$format" ] && FORMAT="$format"
-    [ -n "$quality" ] && QUALITY="$quality"
-    [ -n "$sleep_interval" ] && SLEEP_INTERVAL="$sleep_interval"
-    
-    cat > "$config_path" << EOF
-# Tak Playlist Downloader Configuration
-# Generated on $(date '+%Y-%m-%d %H:%M:%S')
-PLAYLIST_URL="$PLAYLIST_URL"
-OUTPUT_DIR="$OUTPUT_DIR"
-SLEEP_INTERVAL=$SLEEP_INTERVAL
-FORMAT="$FORMAT"
-QUALITY="$QUALITY"
-ENABLE_ARCHIVE=$ENABLE_ARCHIVE
-EOF
-    echo -e "${BLUE}Configuration updated in: $config_path${NC}"
+# Function to get TakData directory path
+get_takdata_path() {
+    local output_dir="$1"
+    local takdata_path="${output_dir}/${TAK_DATA_DIR}"
+    mkdir -p "$takdata_path"
+    echo "$takdata_path"
 }
 
 # Internet connection check
@@ -126,7 +91,7 @@ show_help() {
     echo "  -h            Show this help message"
     echo ""
     echo "Note: This script shares configuration with Download-Playlist.sh"
-    echo "      Settings from .download_config.txt will be used if present."
+    echo "      Settings and logs are stored in '${TAK_DATA_DIR}' subfolder"
 }
 
 # Parse arguments
@@ -157,29 +122,26 @@ for arg in "$@"; do
 done
 
 # ========== LOAD SAVED CONFIGURATION ==========
-CONFIG_PATH="$OUTPUT_DIR/$CONFIG_FILE"
-if [ -f "$CONFIG_PATH" ]; then
-    load_saved_config "$CONFIG_PATH"
+TAK_DATA_PATH=$(get_takdata_path "$OUTPUT_DIR")
+CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+
+if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+    echo -e "${BLUE}Loading saved configuration from: $CONFIG_FILE${NC}"
     
-    # Apply saved values only if not overridden by command line
-    if [ $HAS_O -eq 0 ] && [ -n "$OUTPUT_DIR" ]; then
-        OUTPUT_DIR="$OUTPUT_DIR"
-    fi
-    if [ $HAS_T -eq 0 ] && [ -n "$SLEEP_INTERVAL" ]; then
-        SLEEP_INTERVAL="$SLEEP_INTERVAL"
-    fi
-    if [ $HAS_F -eq 0 ] && [ -n "$FORMAT" ]; then
-        FORMAT="$FORMAT"
-    fi
-    if [ $HAS_Q -eq 0 ] && [ -n "$QUALITY" ]; then
-        QUALITY="$QUALITY"
-    fi
+    [ $HAS_O -eq 0 ] && OUTPUT_DIR=$(jq -r '.OutputDir' "$CONFIG_FILE")
+    [ $HAS_T -eq 0 ] && SLEEP_INTERVAL=$(jq -r '.SleepInterval' "$CONFIG_FILE")
+    [ $HAS_F -eq 0 ] && FORMAT=$(jq -r '.Format' "$CONFIG_FILE")
+    [ $HAS_Q -eq 0 ] && QUALITY=$(jq -r '.Quality' "$CONFIG_FILE")
     
-    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_PATH${NC}"
+    echo -e "${GREEN}[INFO] Using saved settings from: $CONFIG_FILE${NC}"
     echo "  Format: $FORMAT"
     echo "  Quality: $QUALITY"
     echo "  Delay: ${SLEEP_INTERVAL}s"
     echo ""
+elif [ -f "$CONFIG_FILE" ] && ! command -v jq &>/dev/null; then
+    echo -e "${RED}ERROR: jq is required to parse saved configuration${NC}"
+    echo "Please install jq: sudo apt install jq"
+    exit 1
 fi
 
 # Validate quality
@@ -215,23 +177,52 @@ fi
 set_quality_params "$QUALITY" "$FORMAT"
 echo -e "${BLUE}Quality: $QUALITY (forcing ${FORMAT_LOWER} conversion)${NC}"
 
+# ========== SAVE CONFIGURATION IF CHANGED ==========
+if [ $HAS_F -eq 1 ] || [ $HAS_Q -eq 1 ] || [ $HAS_T -eq 1 ]; then
+    TAK_DATA_PATH=$(get_takdata_path "$OUTPUT_DIR")
+    CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
+    
+    # Load existing config to preserve other values
+    if [ -f "$CONFIG_FILE" ] && command -v jq &>/dev/null; then
+        PLAYLIST_URL=$(jq -r '.PlaylistUrl' "$CONFIG_FILE")
+        ENABLE_ARCHIVE=$(jq -r '.EnableArchive' "$CONFIG_FILE")
+    else
+        PLAYLIST_URL=""
+        ENABLE_ARCHIVE="false"
+    fi
+    
+    cat > "$CONFIG_FILE" << EOF
+{
+    "PlaylistUrl": "$PLAYLIST_URL",
+    "OutputDir": "$OUTPUT_DIR",
+    "SleepInterval": $SLEEP_INTERVAL,
+    "Format": "$FORMAT",
+    "Quality": "$QUALITY",
+    "EnableArchive": $ENABLE_ARCHIVE,
+    "LastUpdated": "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+EOF
+    echo -e "${BLUE}Configuration updated in: $CONFIG_FILE${NC}"
+fi
+
 # ========== CHANGE TO OUTPUT DIRECTORY ==========
 cd "$OUTPUT_DIR" || exit 1
 
-# ========== SAVE CONFIGURATION (if any format/quality changes were made) ==========
-if [ $HAS_F -eq 1 ] || [ $HAS_Q -eq 1 ] || [ $HAS_T -eq 1 ]; then
-    save_config "$CONFIG_PATH" "$FORMAT" "$QUALITY" "$SLEEP_INTERVAL"
-fi
+# ========== SET UP TAKDATA DIRECTORY AND LOG FILES ==========
+TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
+mkdir -p "$TAK_DATA_PATH"
 
-# Set up hidden file paths
-ARCHIVE_DIR=".archive_recovered"
-RECOVERED_LOG=".recovered_ids.txt"
-DOWNLOADED_LOG=".downloaded_ids.txt"
-FAILED_LOG=".failed_ids.txt"
-PERMANENTLY_FAILED_LOG=".permanently_failed_ids.txt"
+ARCHIVE_DIR="${TAK_DATA_PATH}/archive_recovered"
+RECOVERED_LOG="${TAK_DATA_PATH}/recovered_ids.txt"
+DOWNLOADED_LOG="${TAK_DATA_PATH}/downloaded_ids.txt"
+FAILED_LOG="${TAK_DATA_PATH}/failed_ids.txt"
+PERMANENTLY_FAILED_LOG="${TAK_DATA_PATH}/permanently_failed_ids.txt"
 
 mkdir -p "$ARCHIVE_DIR"
 touch "$RECOVERED_LOG" "$DOWNLOADED_LOG" "$PERMANENTLY_FAILED_LOG"
+
+echo -e "${BLUE}TakData directory: $TAK_DATA_PATH${NC}"
+echo -e "${BLUE}Log files stored in TakData subfolder${NC}"
 
 # Simple mark functions
 mark_recovered() { 
@@ -312,13 +303,14 @@ echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Retry Failed Downloads${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo "Output directory: $OUTPUT_DIR"
+echo "TakData directory: $TAK_DATA_PATH"
 echo "Format: $FORMAT_LOWER ($DOWNLOAD_TYPE)"
 echo "Quality: $QUALITY"
 echo "Delay between retries: ${SLEEP_INTERVAL}s"
 echo ""
 
 if [ ! -f "$FAILED_LOG" ] || [ ! -s "$FAILED_LOG" ]; then
-    echo -e "${YELLOW}No .failed_ids.txt found or it's empty. Nothing to retry.${NC}"
+    echo -e "${YELLOW}No failed_ids.txt found or it's empty. Nothing to retry.${NC}"
     exit 1
 fi
 
@@ -436,5 +428,8 @@ echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}✓ Downloaded from YouTube: $SUCCESS${NC}"
 echo -e "${GREEN}✓ Recovered from archives: $RECOVERED${NC}"
 echo -e "${RED}✗ Permanently failed: $STILL_FAILED${NC}"
+echo ""
+echo "Files saved to: $OUTPUT_DIR"
+echo "Settings and logs saved to: $TAK_DATA_PATH"
 echo ""
 echo "Permanently failed videos saved to: $PERMANENTLY_FAILED_LOG"
