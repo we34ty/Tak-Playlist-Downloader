@@ -5,8 +5,8 @@ a = Analysis(
     ['Tak-Playlist-Downloader.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[('Download-Playlist.ps1', '.'), ('Retry-Failed.ps1', '.'), ('Move-Recovered.ps1', '.')],
+    hiddenimports=['schedule', 'pystray', 'PIL'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,5 +35,4 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='NONE',
 )
