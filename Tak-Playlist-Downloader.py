@@ -67,11 +67,11 @@ class ScheduledTask:
         self.next_run = None
         self.process = None
         
-        # New fields for tracking interval progress
-        self.last_completion_time = None  # When the last download finished
-        self.last_start_time = None       # When the last download started
-        self.remaining_downloads = None   # For playlist resume (number of videos left)
-        self.interrupted = False           # Whether the last run was interrupted
+        # Tracking fields
+        self.last_completion_time = None
+        self.last_start_time = None
+        self.remaining_downloads = None
+        self.interrupted = False
     
     def to_dict(self):
         """Convert to dictionary for JSON serialization"""
@@ -123,7 +123,6 @@ class ScheduledTask:
             enable_archive=data["enable_archive"],
             enabled=data["enabled"]
         )
-        # Restore tracking fields
         task.last_completion_time = data.get("last_completion_time")
         task.last_start_time = data.get("last_start_time")
         task.remaining_downloads = data.get("remaining_downloads")
@@ -132,13 +131,11 @@ class ScheduledTask:
     
     def get_next_interval_run_time(self):
         """Calculate when the next run should occur based on interval and last completion"""
-        # Get the appropriate reference time (prefer completion time over start time)
         reference_time = self.last_completion_time
         if reference_time is None:
             reference_time = self.last_run
         
         if reference_time is None:
-            # Never ran before, run now
             return datetime.now()
         
         try:
@@ -157,7 +154,6 @@ class ScheduledTask:
             else:
                 return datetime.now()
             
-            # If next run is more than 5 seconds in the past, run now
             if next_run <= datetime.now():
                 return datetime.now()
             
@@ -188,6 +184,10 @@ class YouTubeDownloaderGUI:
         self.tasks = {}
         self.task_queue = Queue()
         self.current_process = None
+        self.scheduled_timers = []
+        self.scheduler_lock = threading.Lock()
+        self.display_to_task_id = {}
+        self.task_colors = {}  # Store colors for listbox items
         
         # Dark mode variable
         self.dark_mode = tk.BooleanVar(value=False)
@@ -201,10 +201,6 @@ class YouTubeDownloaderGUI:
             self.script_ext = ".sh"
             self.tray_enabled = False
             print("System tray disabled on Linux for better compatibility")
-        
-        windows_theme = self.get_windows_theme()
-        if windows_theme is not None:
-            self.dark_mode.set(windows_theme)
         
         # Override PYSTRAY_AVAILABLE based on OS
         global PYSTRAY_AVAILABLE
@@ -230,14 +226,14 @@ class YouTubeDownloaderGUI:
         # Set up the UI
         self.setup_ui()
         
-        # Apply dark mode if saved
-        self.load_settings()
-        if self.dark_mode.get():
-            self.toggle_dark_mode()
+        # Apply initial styles
+        self.setup_styles()
         
+        # Load saved settings
+        self.load_settings()
         self.load_tasks()
         
-        # Bind window events - THIS IS THE CRITICAL FIX
+        # Bind window events
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # Set up system tray (Windows only)
@@ -268,219 +264,174 @@ class YouTubeDownloaderGUI:
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir
     
-    def get_autostart_path(self):
-        """Get the path to the autostart file/folder based on OS"""
-        if self.os_type == "Windows":
-            return Path(os.environ.get('APPDATA', Path.home() / 'AppData/Roaming')) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs' / 'Startup'
-        else:
-            return Path.home() / '.config' / 'autostart'
-    
-    def get_executable_path(self):
-        """Get the path to the current executable/script"""
-        if getattr(sys, 'frozen', False):
-            return Path(sys.executable)
-        else:
-            return Path(sys.argv[0]).absolute()
-    
-    def is_autostart_enabled(self):
-        """Check if autostart is currently enabled"""
-        if self.os_type == "Windows":
-            startup_folder = self.get_autostart_path()
-            shortcut_path = startup_folder / "TakPlaylistDownloader.lnk"
-            bat_path = startup_folder / "TakPlaylistDownloader.bat"
-            return shortcut_path.exists() or bat_path.exists()
-        else:
-            autostart_file = self.get_autostart_path() / "tak-playlist-downloader.desktop"
-            return autostart_file.exists()
-    
-    def create_windows_autostart(self):
-        """Create Windows shortcut for autostart"""
+    def setup_tray(self):
+        """Setup system tray icon and menu"""
+        if not PYSTRAY_AVAILABLE:
+            return
+        
         try:
-            startup_folder = self.get_autostart_path()
-            startup_folder.mkdir(parents=True, exist_ok=True)
+            def create_icon_image():
+                width = 64
+                height = 64
+                if self.dark_mode.get():
+                    bg_color = (45, 45, 45)
+                else:
+                    bg_color = (33, 150, 243)
+                image = Image.new('RGBA', (width, height), (*bg_color, 255))
+                draw = ImageDraw.Draw(image)
+                points = [(24, 16), (24, 48), (48, 32)]
+                draw.polygon(points, fill=(255, 255, 255, 255))
+                return image
             
-            exe_path = self.get_executable_path()
+            def on_show():
+                self.root.after(0, self.restore_from_tray)
             
-            # Create a batch file
-            bat_path = startup_folder / "TakPlaylistDownloader.bat"
-            with open(bat_path, 'w') as f:
-                f.write(f'@echo off\ncd /d "{exe_path.parent}"\n"{exe_path}" --minimized\n')
-            return True
+            def on_quit():
+                self.root.after(0, self.quit_application)
+            
+            self.tray_icon = pystray.Icon(
+                "tak_downloader",
+                create_icon_image(),
+                "Tak Playlist Downloader",
+                menu=pystray.Menu(
+                    pystray.MenuItem("Show", on_show, default=True),
+                    pystray.MenuItem("Quit", on_quit)
+                )
+            )
         except Exception as e:
-            print(f"Failed to create Windows autostart: {e}")
-            return False
-    
-    def create_linux_autostart(self):
-        """Create Linux desktop file for autostart"""
-        try:
-            autostart_dir = self.get_autostart_path()
-            autostart_dir.mkdir(parents=True, exist_ok=True)
-            
-            desktop_file = autostart_dir / "tak-playlist-downloader.desktop"
-            exe_path = self.get_executable_path()
-            
-            if getattr(sys, 'frozen', False):
-                command = f'"{exe_path}" --minimized'
-            else:
-                command = f'python3 "{exe_path}" --minimized'
-            
-            desktop_content = f"""[Desktop Entry]
-Type=Application
-Name=Tak Playlist Downloader
-Comment=Download YouTube playlists
-Exec={command}
-Icon=applications-multimedia
-Terminal=false
-StartupNotify=false
-X-GNOME-Autostart-enabled=true
-Categories=AudioVideo;Network;
-"""
-            with open(desktop_file, 'w') as f:
-                f.write(desktop_content)
-            
-            os.chmod(desktop_file, 0o755)
-            return True
-        except Exception as e:
-            print(f"Failed to create Linux autostart: {e}")
-            return False
-    
-    def remove_windows_autostart(self):
-        """Remove Windows autostart shortcut"""
-        try:
-            startup_folder = self.get_autostart_path()
-            shortcut_path = startup_folder / "TakPlaylistDownloader.lnk"
-            bat_path = startup_folder / "TakPlaylistDownloader.bat"
-            
-            if shortcut_path.exists():
-                shortcut_path.unlink()
-            if bat_path.exists():
-                bat_path.unlink()
-            return True
-        except Exception as e:
-            print(f"Failed to remove Windows autostart: {e}")
-            return False
-    
-    def remove_linux_autostart(self):
-        """Remove Linux autostart desktop file"""
-        try:
-            autostart_file = self.get_autostart_path() / "tak-playlist-downloader.desktop"
-            if autostart_file.exists():
-                autostart_file.unlink()
-            return True
-        except Exception as e:
-            print(f"Failed to remove Linux autostart: {e}")
-            return False
-    
-    def toggle_autostart(self):
-        """Enable or disable autostart based on checkbox"""
-        if self.autostart_var.get():
-            if self.os_type == "Windows":
-                success = self.create_windows_autostart()
-            else:
-                success = self.create_linux_autostart()
-            
-            if success:
-                messagebox.showinfo("Autostart Enabled", 
-                    "Tak Playlist Downloader will start automatically when your computer starts.\n\nThe app will start minimized to the system tray.")
-            else:
-                messagebox.showerror("Error", "Failed to enable autostart. Please check permissions.")
-                self.autostart_var.set(False)
-        else:
-            if self.os_type == "Windows":
-                success = self.remove_windows_autostart()
-            else:
-                success = self.remove_linux_autostart()
-            
-            if success:
-                messagebox.showinfo("Autostart Disabled", "Autostart has been disabled.")
-            else:
-                messagebox.showerror("Error", "Failed to disable autostart.")
+            print(f"Warning: Could not create tray icon: {e}")
+            self.tray_icon = None
     
     def setup_styles(self):
-        """Setup styles for the application based on dark mode setting"""
+        """Setup ttk styles for the application based on dark mode setting"""
+        self.style = ttk.Style()
+        
+        # Use clam theme for better color customization
+        try:
+            self.style.theme_use('clam')
+        except:
+            pass
+        
         if self.dark_mode.get():
             # Dark mode colors
             bg = "#2d2d2d"
             fg = "#ffffff"
             select_bg = "#0d7377"
             select_fg = "#ffffff"
+            hover_bg = "#404040"
             entry_bg = "#3c3c3c"
             button_bg = "#4a4a4a"
+            active_bg = "#5a5a5a"
             trough_bg = "#1e1e1e"
+            running_bg = "#1a5d1a"
+            running_fg = "#ffffff"
+            disabled_bg = "#3a3a3a"
+            disabled_fg = "#6a6a6a"
+            text_bg = "#3c3c3c"  # Background for text widgets
+            text_fg = "#ffffff"
         else:
             # Light mode colors
             bg = "#f0f0f0"
             fg = "#000000"
             select_bg = "#0078d4"
             select_fg = "#ffffff"
+            hover_bg = "#e0e0e0"
             entry_bg = "#ffffff"
             button_bg = "#e0e0e0"
+            active_bg = "#c0c0c0"
             trough_bg = "#d0d0d0"
+            running_bg = "#28a828"
+            running_fg = "#ffffff"
+            disabled_bg = "#d0d0d0"
+            disabled_fg = "#888888"
+            text_bg = "#ffffff"
+            text_fg = "#000000"
         
         # Configure root window background
         self.root.configure(bg=bg)
         
         # ========== CONFIGURE TTK STYLES ==========
-        style = ttk.Style()
         
-        # Force usage of 'clam' theme which supports custom colors better
-        # On Windows, 'clam' theme works better than 'vista' or 'xpnative'
-        try:
-            style.theme_use('clam')
-        except:
-            pass  # Fall back to default theme
-        
-        # Configure base styles
-        style.configure(".", background=bg, foreground=fg)
-        style.configure("TFrame", background=bg)
-        style.configure("TLabel", background=bg, foreground=fg)
-        style.configure("TLabelframe", background=bg, foreground=fg)
-        style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        # Frame styles
+        self.style.configure("TFrame", background=bg)
+        self.style.configure("TLabel", background=bg, foreground=fg)
+        self.style.configure("TLabelframe", background=bg, foreground=fg)
+        self.style.configure("TLabelframe.Label", background=bg, foreground=fg)
         
         # Button styles
-        style.configure("TButton", background=button_bg, foreground=fg, borderwidth=1, padding=6)
-        style.map("TButton",
-            background=[("active", select_bg), ("pressed", select_bg)],
-            foreground=[("active", select_fg), ("pressed", select_fg)])
+        self.style.configure("TButton", background=button_bg, foreground=fg, borderwidth=1, padding=6)
+        self.style.map("TButton",
+            background=[("active", hover_bg), ("pressed", select_bg), ("disabled", disabled_bg)],
+            foreground=[("active", fg), ("pressed", select_fg), ("disabled", disabled_fg)])
+        
+        # Running button style
+        self.style.configure("Running.TButton", background=running_bg, foreground=running_fg, borderwidth=1, padding=6, font=('TkDefaultFont', 9, 'bold'))
+        self.style.map("Running.TButton",
+            background=[("active", running_bg), ("disabled", running_bg)],
+            foreground=[("active", running_fg), ("disabled", running_fg)])
         
         # Entry styles
-        style.configure("TEntry", fieldbackground=entry_bg, foreground=fg, padding=4)
-        style.map("TEntry",
-            fieldbackground=[("focus", entry_bg)],
-            foreground=[("focus", fg)],
-            bordercolor=[("focus", select_bg)])
+        self.style.configure("TEntry", fieldbackground=entry_bg, foreground=fg, padding=4)
+        self.style.map("TEntry",
+            fieldbackground=[("focus", entry_bg), ("disabled", entry_bg)],
+            foreground=[("focus", fg), ("disabled", disabled_fg)])
         
         # Combobox styles
-        style.configure("TCombobox", fieldbackground=entry_bg, foreground=fg, padding=4)
-        style.map("TCombobox",
-            fieldbackground=[("readonly", entry_bg)],
-            foreground=[("readonly", fg)],
+        self.style.configure("TCombobox", fieldbackground=entry_bg, foreground=fg, padding=4, arrowcolor=fg)
+        self.style.map("TCombobox",
+            fieldbackground=[("readonly", entry_bg), ("disabled", entry_bg)],
+            foreground=[("readonly", fg), ("disabled", disabled_fg)],
             selectbackground=[("readonly", select_bg)],
-            selectforeground=[("readonly", select_fg)])
+            selectforeground=[("readonly", select_fg)],
+            arrowcolor=[("disabled", disabled_fg)])
         
-        # Notebook (tabs) styles
-        style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", background=button_bg, foreground=fg, padding=[12, 6])
-        style.map("TNotebook.Tab",
-            background=[("selected", select_bg), ("active", select_bg)],
+        # Notebook styles
+        self.style.configure("TNotebook", background=bg, borderwidth=0, tabmargins=[0, 0, 0, 0])
+        self.style.configure("TNotebook.Tab", background=button_bg, foreground=fg, padding=[12, 6])
+        self.style.map("TNotebook.Tab",
+            background=[("selected", select_bg), ("active", hover_bg)],
             foreground=[("selected", select_fg), ("active", fg)])
         
         # Checkbutton styles
-        style.configure("TCheckbutton", background=bg, foreground=fg)
-        style.map("TCheckbutton",
-            background=[("active", bg)],
-            indicatorcolor=[("selected", select_bg)])
+        self.style.configure("TCheckbutton", background=bg, foreground=fg)
+        self.style.map("TCheckbutton",
+            background=[("active", bg), ("disabled", bg)],
+            foreground=[("active", fg), ("disabled", disabled_fg)],
+            indicatorcolor=[("selected", select_bg), ("disabled", disabled_bg)])
         
         # Progressbar styles
-        style.configure("TProgressbar", background=select_bg, troughcolor=trough_bg)
+        self.style.configure("TProgressbar", background=select_bg, troughcolor=trough_bg)
         
         # Scrollbar styles
-        style.configure("Vertical.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
-        style.configure("Horizontal.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
+        self.style.configure("Vertical.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
+        self.style.configure("Horizontal.TScrollbar", background=button_bg, troughcolor=trough_bg, arrowcolor=fg)
+        self.style.map("Vertical.TScrollbar",
+            background=[("active", hover_bg), ("pressed", select_bg)],
+            arrowcolor=[("active", fg), ("pressed", select_fg)])
+        self.style.map("Horizontal.TScrollbar",
+            background=[("active", hover_bg), ("pressed", select_bg)],
+            arrowcolor=[("active", fg), ("pressed", select_fg)])
+        
+        # Separator styles
+        self.style.configure("TSeparator", background=trough_bg)
         
         # ========== CONFIGURE TK WIDGETS ==========
         
-        # Listbox (task list)
+        # ScrolledText widgets (output areas)
+        for widget in [self.download_status, self.retry_status, self.move_status, self.details_text, self.task_logs]:
+            if widget:
+                widget.configure(
+                    bg=text_bg,
+                    fg=text_fg,
+                    insertbackground=text_fg,  # Cursor color
+                    selectbackground=select_bg,
+                    selectforeground=select_fg,
+                    relief="flat",
+                    bd=0,
+                    highlightthickness=0
+                )
+        
+        # Listbox (task list) - configured separately
         if hasattr(self, 'task_listbox') and self.task_listbox:
             self.task_listbox.configure(
                 bg=entry_bg,
@@ -493,145 +444,121 @@ Categories=AudioVideo;Network;
                 highlightthickness=0
             )
         
-        # Text widgets (ScrolledText)
-        text_widgets = ['download_status', 'retry_status', 'move_status', 'details_text', 'task_logs']
-        for widget_name in text_widgets:
-            if hasattr(self, widget_name) and getattr(self, widget_name):
-                widget = getattr(self, widget_name)
-                widget.configure(
-                    bg=entry_bg,
-                    fg=fg,
-                    insertbackground=fg,  # Cursor color
-                    selectbackground=select_bg,
-                    selectforeground=select_fg,
-                    relief="flat",
-                    bd=0,
-                    highlightthickness=0
-                )
-        
-        # Progress bars (tkinter ttk already handled)
-        
-        # ========== CONFIGURE NOTEBOOK TABS BACKGROUND ==========
-        # This is the key fix - manually set the background of each tab frame
-        for tab_name in ['download_tab', 'retry_tab', 'move_tab', 'scheduler_tab', 'settings_tab']:
-            if hasattr(self, tab_name) and getattr(self, tab_name):
-                tab = getattr(self, tab_name)
-                tab.configure(style="TFrame")
-                # Also configure all children of the tab
-                self._recursive_configure(tab, bg, fg, entry_bg, select_bg, select_fg)
-        
-        # Force update
-        self.root.update_idletasks()
-
-    def _recursive_configure(self, widget, bg, fg, entry_bg, select_bg, select_fg):
-        """Recursively configure all child widgets"""
-        try:
-            # Configure based on widget type
-            if isinstance(widget, ttk.Frame):
-                widget.configure(style="TFrame")
-            elif isinstance(widget, ttk.LabelFrame):
-                widget.configure(style="TLabelframe")
-            elif isinstance(widget, ttk.Label):
-                widget.configure(style="TLabel")
-            elif isinstance(widget, ttk.Button):
-                widget.configure(style="TButton")
-            elif isinstance(widget, ttk.Entry):
-                widget.configure(style="TEntry")
-            elif isinstance(widget, ttk.Combobox):
-                widget.configure(style="TCombobox")
-            elif isinstance(widget, ttk.Checkbutton):
-                widget.configure(style="TCheckbutton")
-            elif isinstance(widget, tk.Frame):
-                widget.configure(bg=bg)
-            elif isinstance(widget, tk.Label):
-                widget.configure(bg=bg, fg=fg)
-            elif isinstance(widget, tk.Listbox):
-                widget.configure(bg=entry_bg, fg=fg, selectbackground=select_bg, selectforeground=select_fg)
-            elif isinstance(widget, tk.Text):
-                widget.configure(bg=entry_bg, fg=fg, insertbackground=fg, selectbackground=select_bg, selectforeground=select_fg)
-        except:
-            pass
-        
-        # Recursively configure children
-        for child in widget.winfo_children():
-            self._recursive_configure(child, bg, fg, entry_bg, select_bg, select_fg)
-
-    def toggle_dark_mode(self):
-        """Toggle dark mode for the application"""
-        self.setup_styles()
-        
-        # Force refresh of the task list
-        if hasattr(self, 'task_listbox') and self.task_listbox:
-            current_selection = self.task_listbox.curselection()
-            items = self.task_listbox.get(0, tk.END)
-            self.task_listbox.delete(0, tk.END)
-            for item in items:
-                self.task_listbox.insert(tk.END, item)
-            if current_selection:
-                self.task_listbox.selection_set(current_selection[0])
-        
-        # Refresh notebook
-        if hasattr(self, 'notebook'):
+        # Configure the notebook tabs to have proper background
+        if hasattr(self, 'notebook') and self.notebook:
             self.notebook.configure(style="TNotebook")
+            for tab in [self.download_tab, self.retry_tab, self.move_tab, self.scheduler_tab, self.settings_tab]:
+                if tab:
+                    tab.configure(style="TFrame")
         
-        self.save_settings()
-
-    def get_windows_theme(self):
-        """Detect Windows dark mode setting (Windows 10/11)"""
-        if self.os_type != "Windows":
-            return None
-        
-        try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
-                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-            winreg.CloseKey(key)
-            return value == 0  # 0 = dark mode, 1 = light mode
-        except:
-            return None
+        # Force a full refresh of all widgets
+        self.root.update_idletasks()
     
-    def apply_dark_mode_to_widget(self, widget, bg, fg, select_bg, entry_bg, button_bg):
-        """Recursively apply dark mode colors to widgets"""
-        try:
-            if isinstance(widget, ttk.Frame):
-                widget.configure(style="TFrame")
-            elif isinstance(widget, ttk.Label):
-                widget.configure(style="TLabel")
-            elif isinstance(widget, ttk.LabelFrame):
-                widget.configure(style="TLabelframe")
-            elif isinstance(widget, ttk.Button):
-                widget.configure(style="TButton")
-            elif isinstance(widget, ttk.Entry):
-                widget.configure(style="TEntry")
-            elif isinstance(widget, ttk.Combobox):
-                widget.configure(style="TCombobox")
-            elif isinstance(widget, ttk.Checkbutton):
-                widget.configure(style="TCheckbutton")
-            elif isinstance(widget, ttk.Notebook):
-                widget.configure(style="TNotebook")
-            elif isinstance(widget, tk.Text):
-                widget.configure(bg=entry_bg, fg=fg, insertbackground=fg)
-            elif isinstance(widget, tk.Listbox):
-                widget.configure(bg=entry_bg, fg=fg, selectbackground=select_bg)
-            elif isinstance(widget, tk.Frame):
-                widget.configure(bg=bg)
-        except Exception as e:
-            pass  # Ignore widgets that don't support these options
+    def _setup_listbox_colors(self):
+        """Setup color dictionary for the task listbox"""
+        if self.dark_mode.get():
+            self.task_colors = {
+                "running": "#00ff00",      # Green
+                "interrupted": "#ffff00",  # Yellow
+                "enabled": "#ffffff",      # White
+                "disabled": "#888888"      # Gray
+            }
+        else:
+            self.task_colors = {
+                "running": "#008800",      # Dark green
+                "interrupted": "#aa8800",  # Dark yellow
+                "enabled": "#000000",      # Black
+                "disabled": "#888888"      # Gray
+            }
         
-        # Recursively apply to children
-        for child in widget.winfo_children():
-            self.apply_dark_mode_to_widget(child, bg, fg, select_bg, entry_bg, button_bg)
+        # Apply to existing listbox if it exists
+        if hasattr(self, 'task_listbox') and self.task_listbox:
+            self.update_task_list()
+    
+    def minimize_to_tray(self):
+        """Minimize the application to system tray"""
+        if not PYSTRAY_AVAILABLE or not self.tray_icon:
+            self.root.iconify()
+            return
+        
+        if self.minimized_to_tray:
+            return
+        
+        self.minimized_to_tray = True
+        self.root.withdraw()
+        
+        if self.tray_icon and not getattr(self.tray_icon, '_running', False):
+            def run_tray():
+                try:
+                    self.tray_icon.run()
+                except Exception as e:
+                    print(f"Tray icon error: {e}")
+            
+            self.tray_thread = threading.Thread(target=run_tray, daemon=True)
+            self.tray_thread.start()
+    
+    def restore_from_tray(self):
+        """Restore the application from system tray"""
+        self.minimized_to_tray = False
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+            self.tray_icon = None
+            self.root.after(100, self.setup_tray)
+    
+    def quit_application(self):
+        """Properly quit the application"""
+        self.minimized_to_tray = False
+        self.save_settings()
+        self.save_tasks()
+        self.scheduler_running = False
+        
+        # Cancel all timers
+        if hasattr(self, 'scheduled_timers'):
+            for timer in self.scheduled_timers:
+                try:
+                    timer.cancel()
+                except:
+                    pass
+        
+        # Kill any running processes
+        for task_id, task in self.tasks.items():
+            if task.running and task.process:
+                try:
+                    task.process.terminate()
+                except:
+                    pass
+        
+        # Stop the tray icon if running
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except:
+                pass
+        
+        # Quit the application
+        self.root.quit()
+        self.root.destroy()
+        sys.exit(0)
+    
+    def cleanup(self):
+        """Clean up running processes on exit"""
+        self.scheduler_running = False
+        for task_id, task in self.tasks.items():
+            if task.running and task.process:
+                try:
+                    task.process.terminate()
+                except:
+                    pass
     
     def setup_ui(self):
         """Setup the entire user interface"""
-        style = ttk.Style()
-        try:
-            # 'clam' theme works best for custom colors on Windows
-            style.theme_use('clam')
-        except:
-            pass
-        
         main_frame = ttk.Frame(self.root, padding="5")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
@@ -870,9 +797,12 @@ Categories=AudioVideo;Network;
         task_scrollbar = ttk.Scrollbar(task_list_frame)
         task_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.task_listbox = tk.Listbox(task_list_frame, yscrollcommand=task_scrollbar.set, height=15)
+        self.task_listbox = tk.Listbox(task_list_frame, yscrollcommand=task_scrollbar.set, height=15, selectmode=tk.SINGLE, activestyle="none")
         self.task_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         task_scrollbar.config(command=self.task_listbox.yview)
+        
+        # Configure listbox colors immediately after creation
+        self._setup_listbox_colors()
         
         self.task_listbox.bind('<<ListboxSelect>>', self.on_task_select)
         
@@ -883,9 +813,16 @@ Categories=AudioVideo;Network;
         ttk.Button(task_btn_frame, text="Add Task", command=self.show_add_task_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Button(task_btn_frame, text="Edit Task", command=self.show_edit_task_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Button(task_btn_frame, text="Delete Task", command=self.delete_task).pack(side=tk.LEFT, padx=2)
-        ttk.Button(task_btn_frame, text="Run Now", command=self.run_task_now).pack(side=tk.LEFT, padx=2)
-        ttk.Button(task_btn_frame, text="Reset Interrupted", command=self.reset_interrupted_task).pack(side=tk.LEFT, padx=2)
-
+        
+        self.run_now_btn = ttk.Button(task_btn_frame, text="▶ Run Now", command=self.run_task_now)
+        self.run_now_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.clear_interrupted_btn = ttk.Button(task_btn_frame, text="⟳ Clear Interrupted", command=self.clear_interrupted_task)
+        self.clear_interrupted_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.force_reset_btn = ttk.Button(task_btn_frame, text="⚠ Force Reset", command=self.force_reset_task)
+        self.force_reset_btn.pack(side=tk.LEFT, padx=2)
+        
         # Enable/Disable toggle
         self.enable_task_var = tk.BooleanVar()
         ttk.Checkbutton(left_panel, text="Task Enabled", variable=self.enable_task_var, command=self.toggle_task_enabled).pack(anchor=tk.W, pady=5)
@@ -912,13 +849,13 @@ Categories=AudioVideo;Network;
         scheduler_control_frame = ttk.Frame(right_panel)
         scheduler_control_frame.pack(fill=tk.X, pady=5)
         
-        self.start_scheduler_btn = ttk.Button(scheduler_control_frame, text="Start Global Scheduler", command=self.start_global_scheduler)
+        self.start_scheduler_btn = ttk.Button(scheduler_control_frame, text="▶ Start Scheduler", command=self.start_global_scheduler)
         self.start_scheduler_btn.pack(side=tk.LEFT, padx=5)
         
-        self.stop_scheduler_btn = ttk.Button(scheduler_control_frame, text="Stop Global Scheduler", command=self.stop_global_scheduler, state=tk.DISABLED)
+        self.stop_scheduler_btn = ttk.Button(scheduler_control_frame, text="⏹ Stop Scheduler", command=self.stop_global_scheduler, state=tk.DISABLED)
         self.stop_scheduler_btn.pack(side=tk.LEFT, padx=5)
         
-        self.scheduler_status_label = ttk.Label(scheduler_control_frame, text="Scheduler: Stopped", foreground="red")
+        self.scheduler_status_label = ttk.Label(scheduler_control_frame, text="Scheduler: STOPPED", foreground="red")
         self.scheduler_status_label.pack(side=tk.LEFT, padx=10)
     
     def setup_settings_tab(self):
@@ -936,27 +873,15 @@ Categories=AudioVideo;Network;
         
         ttk.Separator(main_frame, orient='horizontal').grid(row=1, column=0, columnspan=3, sticky=tk.W+tk.E, pady=10)
         
-        # Autostart frame
-        autostart_frame = ttk.LabelFrame(main_frame, text="Autostart", padding="10")
-        autostart_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
-        
-        self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
-        ttk.Checkbutton(autostart_frame, text="Start Tak Playlist Downloader automatically when computer starts",
-                        variable=self.autostart_var, command=self.toggle_autostart).pack(anchor=tk.W, pady=5)
-        
-        ttk.Label(autostart_frame, text="Note: The app will start minimized to system tray (Windows) or in background (Linux)",
-                  foreground="gray").pack(anchor=tk.W, pady=2)
-        
         # Dark mode frame
         darkmode_frame = ttk.LabelFrame(main_frame, text="Appearance", padding="10")
-        darkmode_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        darkmode_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
-        ttk.Checkbutton(darkmode_frame, text="Dark Mode", variable=self.dark_mode,
-                        command=self.toggle_dark_mode).pack(anchor=tk.W, pady=5)
+        ttk.Checkbutton(darkmode_frame, text="Dark Mode", variable=self.dark_mode, command=self.toggle_dark_mode).pack(anchor=tk.W, pady=5)
         
         # System tray info
         tray_frame = ttk.LabelFrame(main_frame, text="System Tray", padding="10")
-        tray_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        tray_frame.grid(row=3, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         if PYSTRAY_AVAILABLE:
             ttk.Label(tray_frame, text="✓ System tray support enabled", foreground="green").pack(anchor=tk.W, pady=2)
@@ -969,7 +894,7 @@ Categories=AudioVideo;Network;
         
         # Config location info
         info_frame = ttk.LabelFrame(main_frame, text="Configuration", padding="10")
-        info_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        info_frame.grid(row=4, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         ttk.Label(info_frame, text=f"Settings saved to: {self.settings_file}").pack(anchor=tk.W, pady=2)
         ttk.Label(info_frame, text="Settings are automatically saved when you change any field").pack(anchor=tk.W, pady=2)
@@ -977,7 +902,7 @@ Categories=AudioVideo;Network;
         
         # System info
         sys_frame = ttk.LabelFrame(main_frame, text="System Information", padding="10")
-        sys_frame.grid(row=6, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        sys_frame.grid(row=5, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         ttk.Label(sys_frame, text=f"Operating System: {self.os_type}").pack(anchor=tk.W, pady=2)
         ttk.Label(sys_frame, text=f"Script Extension: {self.script_ext}").pack(anchor=tk.W, pady=2)
@@ -985,7 +910,7 @@ Categories=AudioVideo;Network;
         
         # About
         about_frame = ttk.LabelFrame(main_frame, text="About", padding="10")
-        about_frame.grid(row=7, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
+        about_frame.grid(row=6, column=0, columnspan=3, sticky=tk.W+tk.E, pady=5)
         
         about_text = """Tak Playlist Downloader
 A cross-platform graphical interface for downloading YouTube playlists.
@@ -998,7 +923,6 @@ Features:
 - Schedule multiple automatic downloads
 - Settings automatically saved
 - Dark mode support
-- Autostart support
 - System tray support
 - All logs stored in '.TakData' subfolder
 
@@ -1010,132 +934,6 @@ Scripts required in the same directory:
         about_label = ttk.Label(about_frame, text=about_text, justify=tk.LEFT)
         about_label.pack(anchor=tk.W, pady=5)
     
-    def setup_tray(self):
-        """Setup system tray icon and menu"""
-        if not PYSTRAY_AVAILABLE:
-            return
-        
-        try:
-            def create_icon_image():
-                width = 64
-                height = 64
-                # Use different colors based on dark mode
-                if self.dark_mode.get():
-                    bg_color = (33, 33, 33)
-                else:
-                    bg_color = (33, 150, 243)
-                image = Image.new('RGB', (width, height), bg_color)
-                draw = ImageDraw.Draw(image)
-                points = [(24, 16), (24, 48), (48, 32)]
-                draw.polygon(points, fill=(255, 255, 255))
-                return image
-            
-            def on_show():
-                self.root.after(0, self.restore_from_tray)
-            
-            def on_quit():
-                self.root.after(0, self.quit_application)
-            
-            self.tray_icon = pystray.Icon(
-                "tak_downloader",
-                create_icon_image(),
-                "Tak Playlist Downloader",
-                menu=pystray.Menu(
-                    pystray.MenuItem("Show", on_show, default=True),
-                    pystray.MenuItem("Quit", on_quit)
-                )
-            )
-        except Exception as e:
-            print(f"Warning: Could not create tray icon: {e}")
-            self.tray_icon = None
-    
-    def minimize_to_tray(self):
-        """Minimize the application to system tray"""
-        if not PYSTRAY_AVAILABLE or not self.tray_icon:
-            self.root.iconify()
-            return
-        
-        if self.minimized_to_tray:
-            return
-        
-        self.minimized_to_tray = True
-        self.root.withdraw()
-        
-        if self.tray_icon and not getattr(self.tray_icon, '_running', False):
-            def run_tray():
-                try:
-                    self.tray_icon.run()
-                except Exception as e:
-                    print(f"Tray icon error: {e}")
-            
-            self.tray_thread = threading.Thread(target=run_tray, daemon=True)
-            self.tray_thread.start()
-    
-    def restore_from_tray(self):
-        """Restore the application from system tray"""
-        self.minimized_to_tray = False
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except Exception:
-                pass
-            self.tray_icon = None
-            self.root.after(100, self.setup_tray)
-    
-    def quit_application(self):
-        """Properly quit the application"""
-        self.minimized_to_tray = False
-        self.save_settings()
-        self.save_tasks()
-        self.scheduler_running = False
-        
-        # Kill any running processes
-        for task_id, task in self.tasks.items():
-            if task.running and task.process:
-                try:
-                    task.process.terminate()
-                except:
-                    pass
-        
-        # Stop the tray icon if running
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except:
-                pass
-        
-        # Quit the application
-        self.root.quit()
-        self.root.destroy()
-        sys.exit(0)
-    
-    def cleanup(self):
-        """Clean up running processes on exit"""
-        self.scheduler_running = False
-        for task_id, task in self.tasks.items():
-            if task.running and task.process:
-                try:
-                    task.process.terminate()
-                except:
-                    pass
-    
-    # ... (rest of the methods remain the same as your original code)
-    # The following methods should be kept as they were:
-    # add_current_to_scheduler, show_add_task_dialog, browse_folder_dialog, 
-    # generate_task_name, on_task_select, update_task_list, toggle_task_enabled,
-    # delete_task, run_task_now, show_edit_task_dialog, is_within_time_window,
-    # execute_task, build_task_command, update_task_next_run, add_task_log,
-    # start_global_scheduler, stop_global_scheduler, _run_scheduler_loop,
-    # check_and_start_scheduler, start_task_processor, _process_task_queue,
-    # browse_scripts_dir, browse_folder, set_current_path, load_config_from_folder,
-    # save_settings, save_tasks, load_tasks, load_settings, on_closing,
-    # stop_current_download, update_status, build_download_command,
-    # build_retry_command, build_move_command, run_script, execute_script
-
     def add_current_to_scheduler(self):
         """Add current download settings as a scheduled task"""
         if not self.download_url.get().strip():
@@ -1325,7 +1123,6 @@ Scripts required in the same directory:
             
             if edit_task:
                 task_id = edit_task.id
-                # Remove old task from scheduler if running
                 if self.scheduler_running:
                     self.stop_global_scheduler()
             else:
@@ -1358,14 +1155,12 @@ Scripts required in the same directory:
             
             dialog.destroy()
             
-            # Restart scheduler if it was running
             if self.scheduler_running:
                 self.start_global_scheduler()
         
         ttk.Button(button_frame, text="Save Task", command=save_task).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
         
-        # Configure grid weights for scrollable frame
         scrollable_frame.columnconfigure(1, weight=1)
     
     def browse_folder_dialog(self, string_var):
@@ -1378,7 +1173,6 @@ Scripts required in the same directory:
     def generate_task_name(self):
         """Generate a default task name based on playlist URL"""
         url = self.download_url.get().strip()
-        # Extract playlist ID or use timestamp
         if "list=" in url:
             list_part = url.split("list=")[1].split("&")[0]
             name = f"Playlist_{list_part[:16]}"
@@ -1386,13 +1180,48 @@ Scripts required in the same directory:
             name = f"Task_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         return name
     
+    def update_task_list(self):
+        """Update the task listbox with color-coded status indicators"""
+        self.task_listbox.delete(0, tk.END)
+        self.display_to_task_id = {}
+        
+        # Ensure task_colors exists
+        if not hasattr(self, 'task_colors') or not self.task_colors:
+            self._setup_listbox_colors()
+        
+        for idx, (task_id, task) in enumerate(self.tasks.items()):
+            # Determine status text and color
+            if task.running:
+                status_text = "🟢 RUNNING"
+                color = self.task_colors.get("running", "green")
+            elif task.interrupted:
+                status_text = "🟡 INTERRUPTED"
+                color = self.task_colors.get("interrupted", "orange")
+            elif task.enabled:
+                status_text = "🔵 ENABLED"
+                color = self.task_colors.get("enabled", "black")
+            else:
+                status_text = "⚪ DISABLED"
+                color = self.task_colors.get("disabled", "gray")
+            
+            name = task.name[:35]
+            display_text = f"[{status_text}] {name}"
+            
+            self.task_listbox.insert(tk.END, display_text)
+            self.task_listbox.itemconfig(idx, fg=color)
+            self.display_to_task_id[idx] = task_id
+    
     def on_task_select(self, event):
         """Handle task selection from listbox"""
         selection = self.task_listbox.curselection()
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
         task = self.tasks.get(task_id)
         if not task:
             return
@@ -1400,47 +1229,29 @@ Scripts required in the same directory:
         # Update details text
         self.details_text.delete(1.0, tk.END)
         details = f"""Name: {task.name}
-    Playlist URL: {task.playlist_url}
-    Output Directory: {task.output_dir}
-    Schedule: Every {task.interval} {task.schedule_type}
-    """
+Playlist URL: {task.playlist_url}
+Output Directory: {task.output_dir}
+Schedule: Every {task.interval} {task.schedule_type}
+"""
         if task.enable_specific_time:
             details += f"Specific Time: {task.specific_hour}:{task.specific_minute}\n"
         if task.enable_time_window:
             details += f"Time Window: {task.start_hour}:{task.start_minute} - {task.end_hour}:{task.end_minute}\n"
         details += f"""Format: {task.format}
-    Quality: {task.quality}
-    Archive Recovery: {'Yes' if task.enable_archive else 'No'}
-    Enabled: {'Yes' if task.enabled else 'No'}
-    Last Run: {task.last_run if task.last_run else 'Never'}
-    """
+Quality: {task.quality}
+Archive Recovery: {'Yes' if task.enable_archive else 'No'}
+Enabled: {'Yes' if task.enabled else 'No'}
+Last Run: {task.last_run if task.last_run else 'Never'}
+"""
         
-        # Add progress information
         if task.interrupted and task.remaining_downloads is not None:
             details += f"\n⚠️ Last run was interrupted! {task.remaining_downloads} videos remaining.\n"
-            details += f"   Will resume on next scheduled run.\n"
+            details += f"   Use 'Clear Interrupted' to resume, or 'Force Reset' to start fresh.\n"
         elif task.running:
             details += f"\n🟢 Currently running...\n"
-        elif task.last_completion_time:
-            try:
-                last = datetime.fromisoformat(task.last_completion_time)
-                if not task.enable_specific_time:
-                    next_run = task.get_next_interval_run_time()
-                    details += f"\nNext run will be approximately: {next_run.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            except:
-                pass
         
         self.details_text.insert(1.0, details)
-        
-        # Update enable checkbox
         self.enable_task_var.set(task.enabled)
-    
-    def update_task_list(self):
-        """Update the task listbox"""
-        self.task_listbox.delete(0, tk.END)
-        for task_id, task in self.tasks.items():
-            status = "✓" if task.enabled else "✗"
-            self.task_listbox.insert(tk.END, f"{task_id} - {status} {task.name}")
     
     def toggle_task_enabled(self):
         """Enable or disable selected task"""
@@ -1448,17 +1259,30 @@ Scripts required in the same directory:
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
         task = self.tasks.get(task_id)
         if task:
             task.enabled = self.enable_task_var.get()
             self.save_tasks()
             self.update_task_list()
             
-            # Restart scheduler to apply changes
-            if self.scheduler_running:
-                self.stop_global_scheduler()
-                self.start_global_scheduler()
+            with self.scheduler_lock:
+                if self.scheduler_running:
+                    self._cancel_task_timers(task_id)
+                    if task.enabled:
+                        if task.enable_specific_time:
+                            self._schedule_specific_time_task(task)
+                        else:
+                            self._schedule_interval_task(task)
+            
+            for i, (tid, t) in enumerate(self.tasks.items()):
+                if tid == task_id:
+                    self.task_listbox.selection_set(i)
+                    break
     
     def delete_task(self):
         """Delete selected task"""
@@ -1466,14 +1290,19 @@ Scripts required in the same directory:
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
-        if messagebox.askyesno("Confirm Delete", f"Delete task '{self.tasks[task_id].name}'?"):
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
+        task_name = self.tasks[task_id].name
+        if messagebox.askyesno("Confirm Delete", f"Delete task '{task_name}'?"):
+            self._cancel_task_timers(task_id)
             del self.tasks[task_id]
             self.save_tasks()
             self.update_task_list()
             self.details_text.delete(1.0, tk.END)
             
-            # Restart scheduler if running
             if self.scheduler_running:
                 self.stop_global_scheduler()
                 self.start_global_scheduler()
@@ -1484,26 +1313,97 @@ Scripts required in the same directory:
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
         task = self.tasks.get(task_id)
-        if task:
-            self.execute_task(task)
-
-    def reset_interrupted_task(self):
-        """Reset an interrupted task so it starts fresh next time"""
+        if not task:
+            return
+        
+        if task.running:
+            messagebox.showwarning("Task Running", f"'{task.name}' is already running!")
+            return
+        
+        if messagebox.askyesno("Confirm Run", f"Run '{task.name}' now?\n\nThis will run immediately regardless of schedule.\nThe task will still run on its normal schedule afterward."):
+            self.add_task_log(task.id, f"MANUAL RUN: {task.name} - Running now (outside normal schedule)")
+            threading.Thread(target=self._execute_once, args=(task,), daemon=True).start()
+    
+    def clear_interrupted_task(self):
+        """Clear interrupted flag so task resumes where it left off"""
         selection = self.task_listbox.curselection()
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
         task = self.tasks.get(task_id)
-        if task and messagebox.askyesno("Confirm Reset", f"Reset '{task.name}'?\n\nThis will clear the interrupted state and the task will start fresh on next run."):
+        if not task:
+            return
+        
+        if not task.interrupted and task.remaining_downloads is None:
+            messagebox.showinfo("No Interruption", f"'{task.name}' is not in an interrupted state.")
+            return
+        
+        if messagebox.askyesno("Clear Interrupted", 
+            f"Clear interrupted state for '{task.name}'?\n\n"
+            f"This will allow the task to RESUME from where it left off.\n"
+            f"Remaining downloads: {task.remaining_downloads if task.remaining_downloads else 'Unknown'}"):
+            
+            task.interrupted = False
+            self.save_tasks()
+            self.update_task_list()
+            self.on_task_select(None)
+            self.add_task_log(task.id, f"CLEARED: {task.name} - Interrupted flag cleared, will resume on next run")
+            
+            for i, (tid, t) in enumerate(self.tasks.items()):
+                if tid == task_id:
+                    self.task_listbox.selection_set(i)
+                    break
+    
+    def force_reset_task(self):
+        """Force reset a task completely"""
+        selection = self.task_listbox.curselection()
+        if not selection:
+            return
+        
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
+        task = self.tasks.get(task_id)
+        if not task:
+            return
+        
+        result = messagebox.askyesno("⚠ FORCE RESET ⚠", 
+            f"Are you sure you want to FORCE RESET '{task.name}'?\n\n"
+            f"This will:\n"
+            f"  • Clear interrupted flag\n"
+            f"  • Reset remaining downloads count\n"
+            f"  • Reset last completion time\n\n"
+            f"The task will start FRESH on its next scheduled run.\n"
+            f"Any partially downloaded files may be re-downloaded.",
+            icon='warning')
+        
+        if result:
             task.interrupted = False
             task.remaining_downloads = None
             task.last_completion_time = None
+            task.last_run = None
             self.save_tasks()
-            self.on_task_select(None)  # Refresh display
-            self.add_task_log(task_id, f"RESET: {task.name} - Interrupted state cleared")
+            self.update_task_list()
+            self.on_task_select(None)
+            self.add_task_log(task.id, f"RESET: {task.name} - Task completely reset, will start fresh")
+            
+            for i, (tid, t) in enumerate(self.tasks.items()):
+                if tid == task_id:
+                    self.task_listbox.selection_set(i)
+                    break
     
     def show_edit_task_dialog(self):
         """Show edit dialog for selected task"""
@@ -1511,188 +1411,29 @@ Scripts required in the same directory:
         if not selection:
             return
         
-        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        idx = selection[0]
+        task_id = self.display_to_task_id.get(idx)
+        if not task_id:
+            return
+        
         task = self.tasks.get(task_id)
         if task:
             self.show_add_task_dialog(edit_task=task)
     
-    def is_within_time_window(self, task):
-        """Check if current time is within task's time window"""
-        if not task.enable_time_window:
-            return True
-        
-        now = datetime.now()
-        current = now.time()
-        
-        start = time(int(task.start_hour), int(task.start_minute))
-        end = time(int(task.end_hour), int(task.end_minute))
-        
-        if start <= end:
-            return start <= current <= end
-        else:
-            return current >= start or current <= end
-    
-    def execute_task(self, task):
-        """Execute a scheduled task"""
-        if task.running:
-            self.add_task_log(task.id, f"SKIP: {task.name} - Already running")
-            return
-        
-        if not self.is_within_time_window(task):
-            self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
-            return
-        
-        # For interval-based tasks, check if it's time to run based on last completion
-        if not task.enable_specific_time:
-            next_run = task.get_next_interval_run_time()
-            if next_run > datetime.now():
-                # Not time yet, reschedule
-                delay = (next_run - datetime.now()).total_seconds()
-                timer = threading.Timer(delay, self._execute_wrapper, args=[task, False])
-                timer.daemon = True
-                timer.start()
-                self.scheduled_timers.append(timer)
-                return
-        
-        task.running = True
-        task.last_start_time = datetime.now().isoformat()
-        
-        # Track if this is a resume (was interrupted)
-        is_resume = task.interrupted and task.remaining_downloads is not None
-        
-        if is_resume:
-            self.add_task_log(task.id, f"RESUME: {task.name} - Resuming from previous run")
-            task.interrupted = False
-        else:
-            self.add_task_log(task.id, f"START: {task.name}")
-        
-        self.save_tasks()
-        
-        def run_task():
-            try:
-                cmd = self.build_task_command(task)
-                if not cmd:
-                    self.add_task_log(task.id, f"ERROR: {task.name} - Failed to build command")
-                    task.running = False
-                    return
-                
-                process_flags = {}
-                if self.os_type == "Windows":
-                    process_flags['creationflags'] = subprocess.CREATE_NO_WINDOW
-                
-                task.process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True,
-                    cwd=str(self.script_dir),
-                    **process_flags
-                )
-                
-                for line in task.process.stdout:
-                    clean_line = strip_ansi_codes(line).strip()
-                    if clean_line:
-                        self.add_task_log(task.id, clean_line)
-                        
-                        # Track progress
-                        progress_match = re.search(r'\[(\d+)/(\d+)\]', clean_line)
-                        if progress_match:
-                            current = int(progress_match.group(1))
-                            total = int(progress_match.group(2))
-                            task.remaining_downloads = total - current
-                            self.save_tasks()
-                
-                return_code = task.process.wait()
-                task.process = None
-                
-                if return_code == 0:
-                    task.last_completion_time = datetime.now().isoformat()
-                    task.remaining_downloads = None
-                    task.interrupted = False
-                    task.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.add_task_log(task.id, f"COMPLETE: {task.name}")
+    def _cancel_task_timers(self, task_id):
+        """Cancel all pending timers for a specific task"""
+        if hasattr(self, 'scheduled_timers'):
+            remaining_timers = []
+            for timer in self.scheduled_timers:
+                if hasattr(timer, 'task_id') and timer.task_id == task_id:
+                    try:
+                        timer.cancel()
+                    except:
+                        pass
                 else:
-                    task.interrupted = True
-                    self.add_task_log(task.id, f"INTERRUPTED: {task.name} (exit code: {return_code})")
-                
-                self.save_tasks()
-                
-            except Exception as e:
-                task.interrupted = True
-                self.add_task_log(task.id, f"ERROR: {task.name} - {str(e)}")
-                self.save_tasks()
-            finally:
-                task.running = False
-                # The task will be rescheduled by the wrapper if needed
-        
-        thread = threading.Thread(target=run_task, daemon=True)
-        thread.start()
+                    remaining_timers.append(timer)
+            self.scheduled_timers = remaining_timers
     
-    def build_task_command(self, task, resume=False):
-        """Build command for a scheduled task"""
-        script_path = self.script_dir / f"Download-Playlist{self.script_ext}"
-        
-        if not script_path.exists():
-            return None
-        
-        cmd = []
-        if self.os_type == "Windows":
-            cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
-        else:
-            cmd = ["/bin/bash", str(script_path)]
-        
-        cmd.extend(["-p", task.playlist_url])
-        cmd.extend(["-o", task.output_dir])
-        cmd.extend(["-t", str(11)])  # Default sleep interval
-        cmd.extend(["-f", task.format])
-        cmd.extend(["-q", task.quality])
-        
-        if task.enable_archive:
-            cmd.append("-a")
-        
-        # Note: Resume functionality is handled by the script's own resume capability
-        # (it checks for existing .TakData files)
-        
-        return cmd
-    
-    def update_task_next_run(self, task):
-        """Update the next run time for a task"""
-        # This is calculated by the schedule library
-        pass
-    
-    def add_task_log(self, task_id, message):
-        """Add a log entry for a task"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
-        
-        def _update():
-            self.task_logs.insert(tk.END, log_entry)
-            self.task_logs.see(tk.END)
-        self.root.after(0, _update)
-    
-    def start_global_scheduler(self):
-        """Start the global scheduler to run all enabled tasks"""
-        if self.scheduler_running:
-            self.stop_global_scheduler()
-        
-        self.scheduler_running = True
-        self.scheduled_timers = []
-        
-        for task_id, task in self.tasks.items():
-            if not task.enabled:
-                continue
-            
-            if task.enable_specific_time:
-                self._schedule_specific_time_task(task)
-            else:
-                self._schedule_interval_task(task)
-        
-        self.scheduler_status_label.config(text="Scheduler: RUNNING", foreground="green")
-        self.start_scheduler_btn.config(text="▶ Running", state=tk.DISABLED)
-        self.stop_scheduler_btn.config(text="⏹ Stop", state=tk.NORMAL)
-
     def _schedule_specific_time_task(self, task):
         """Schedule a task at a specific time of day"""
         now = datetime.now()
@@ -1706,23 +1447,24 @@ Scripts required in the same directory:
         def run_and_reschedule():
             if not self.scheduler_running:
                 return
-            
-            # Execute the task
             self._execute_and_reschedule(task, is_specific=True)
         
         timer = threading.Timer(delay_seconds, run_and_reschedule)
         timer.daemon = True
+        timer.task_id = task.id
         timer.start()
+        
+        if not hasattr(self, 'scheduled_timers'):
+            self.scheduled_timers = []
         self.scheduled_timers.append(timer)
         
         self.add_task_log(task.id, f"SCHEDULED: {task.name} at {task.specific_hour}:{task.specific_minute} (in {int(delay_seconds/60)} minutes)")
-
+    
     def _schedule_interval_task(self, task):
         """Schedule an interval-based task based on last completion time"""
         now = datetime.now()
         next_run = task.get_next_interval_run_time()
         
-        # If next_run is None or in the past, run immediately
         if next_run is None or next_run <= now:
             self.add_task_log(task.id, f"STARTING: {task.name} - Running now")
             threading.Thread(target=self._execute_and_reschedule, args=(task, False), daemon=True).start()
@@ -1737,49 +1479,45 @@ Scripts required in the same directory:
         
         timer = threading.Timer(delay_seconds, run_and_reschedule)
         timer.daemon = True
+        timer.task_id = task.id
         timer.start()
+        
+        if not hasattr(self, 'scheduled_timers'):
+            self.scheduled_timers = []
         self.scheduled_timers.append(timer)
         
-        # Format delay for display
         if delay_seconds < 60:
             self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds)} seconds)")
         elif delay_seconds < 3600:
             self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds/60)} minutes)")
         else:
             self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds/3600)} hours)")
-
+    
     def _execute_and_reschedule(self, task, is_specific):
         """Execute a task and then reschedule it for its next run"""
         if not self.scheduler_running:
             return
         
-        # Check if task is already running
-        if task.running:
-            self.add_task_log(task.id, f"SKIP: {task.name} - Already running")
-            # Reschedule anyway
-            if is_specific:
-                self._schedule_specific_time_task(task)
-            else:
-                self._schedule_interval_task(task)
-            return
+        with self.scheduler_lock:
+            if task.running:
+                self.add_task_log(task.id, f"SKIP: {task.name} - Already running")
+                return
+            
+            if not self.is_within_time_window(task):
+                self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
+                if is_specific:
+                    self._schedule_specific_time_task(task)
+                else:
+                    self._schedule_interval_task(task)
+                return
         
-        # Check time window
-        if not self.is_within_time_window(task):
-            self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
-            # Reschedule for next interval
-            if is_specific:
-                self._schedule_specific_time_task(task)
-            else:
-                self._schedule_interval_task(task)
-            return
-        
-        # Run the task
         self.execute_task(task, is_specific)
-
+    
     def execute_task(self, task, is_specific):
         """Execute a scheduled task"""
         task.running = True
         task.last_start_time = datetime.now().isoformat()
+        self.root.after(0, self.update_task_list)
         
         is_resume = task.interrupted and task.remaining_downloads is not None
         
@@ -1798,6 +1536,7 @@ Scripts required in the same directory:
                     self.add_task_log(task.id, f"ERROR: {task.name} - Failed to build command")
                     task.running = False
                     self._schedule_next_after_completion(task, is_specific)
+                    self.root.after(0, self.update_task_list)
                     return
                 
                 process_flags = {}
@@ -1820,7 +1559,6 @@ Scripts required in the same directory:
                     if clean_line:
                         self.add_task_log(task.id, clean_line)
                         
-                        # Track progress
                         progress_match = re.search(r'\[(\d+)/(\d+)\]', clean_line)
                         if progress_match:
                             current = int(progress_match.group(1))
@@ -1850,40 +1588,163 @@ Scripts required in the same directory:
             finally:
                 task.running = False
                 self._schedule_next_after_completion(task, is_specific)
+                self.root.after(0, self.update_task_list)
         
         thread = threading.Thread(target=run_task, daemon=True)
         thread.start()
-
+    
     def _schedule_next_after_completion(self, task, is_specific):
         """Schedule the next run after a task completes"""
         if not self.scheduler_running or not task.enabled:
             return
         
         if is_specific:
-            # For specific time, schedule for next day
             self._schedule_specific_time_task(task)
         else:
-            # For interval tasks, schedule based on completion time
-            # Update the last_completion_time to now for interval calculation
             task.last_completion_time = datetime.now().isoformat()
             self.save_tasks()
             self._schedule_interval_task(task)
-
+    
+    def _execute_once(self, task):
+        """Execute a task once without affecting its schedule"""
+        if task.running:
+            self.add_task_log(task.id, f"SKIP: {task.name} - Already running")
+            return
+        
+        if not self.is_within_time_window(task):
+            self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
+            return
+        
+        self.add_task_log(task.id, f"MANUAL START: {task.name}")
+        
+        def run():
+            try:
+                cmd = self.build_task_command(task)
+                if not cmd:
+                    self.add_task_log(task.id, f"ERROR: {task.name} - Failed to build command")
+                    return
+                
+                process_flags = {}
+                if self.os_type == "Windows":
+                    process_flags['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
+                task.process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    cwd=str(self.script_dir),
+                    **process_flags
+                )
+                
+                for line in task.process.stdout:
+                    clean_line = strip_ansi_codes(line).strip()
+                    if clean_line:
+                        self.add_task_log(task.id, clean_line)
+                
+                task.process.wait()
+                task.process = None
+                self.add_task_log(task.id, f"MANUAL COMPLETE: {task.name}")
+                
+            except Exception as e:
+                self.add_task_log(task.id, f"MANUAL ERROR: {task.name} - {str(e)}")
+        
+        threading.Thread(target=run, daemon=True).start()
+    
+    def is_within_time_window(self, task):
+        """Check if current time is within task's time window"""
+        if not task.enable_time_window:
+            return True
+        
+        now = datetime.now()
+        current = now.time()
+        
+        start = time(int(task.start_hour), int(task.start_minute))
+        end = time(int(task.end_hour), int(task.end_minute))
+        
+        if start <= end:
+            return start <= current <= end
+        else:
+            return current >= start or current <= end
+    
+    def build_task_command(self, task):
+        """Build command for a scheduled task"""
+        script_path = self.script_dir / f"Download-Playlist{self.script_ext}"
+        
+        if not script_path.exists():
+            return None
+        
+        cmd = []
+        if self.os_type == "Windows":
+            cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+        else:
+            cmd = ["/bin/bash", str(script_path)]
+        
+        cmd.extend(["-p", task.playlist_url])
+        cmd.extend(["-o", task.output_dir])
+        cmd.extend(["-t", str(11)])
+        cmd.extend(["-f", task.format])
+        cmd.extend(["-q", task.quality])
+        
+        if task.enable_archive:
+            cmd.append("-a")
+        
+        return cmd
+    
+    def add_task_log(self, task_id, message):
+        """Add a log entry for a task"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] {message}\n"
+        
+        def _update():
+            self.task_logs.insert(tk.END, log_entry)
+            self.task_logs.see(tk.END)
+        self.root.after(0, _update)
+    
+    def start_global_scheduler(self):
+        """Start the global scheduler to run all enabled tasks"""
+        with self.scheduler_lock:
+            if self.scheduler_running:
+                self.stop_global_scheduler()
+            
+            self.scheduler_running = True
+            self.scheduled_timers = []
+            
+            for task_id, task in self.tasks.items():
+                if not task.enabled:
+                    continue
+                
+                if task.running:
+                    self.add_task_log(task.id, f"TASK RUNNING: {task.name} - Already in progress")
+                    continue
+                
+                if task.enable_specific_time:
+                    self._schedule_specific_time_task(task)
+                else:
+                    self._schedule_interval_task(task)
+        
+        self.scheduler_status_label.config(text="Scheduler: RUNNING", foreground="green")
+        self.start_scheduler_btn.config(state=tk.DISABLED)
+        self.stop_scheduler_btn.config(state=tk.NORMAL)
+    
     def stop_global_scheduler(self):
         """Stop the global scheduler"""
-        self.scheduler_running = False
-        
-        # Cancel all pending timers
-        for timer in self.scheduled_timers:
-            try:
-                timer.cancel()
-            except:
-                pass
-        self.scheduled_timers = []
+        with self.scheduler_lock:
+            self.scheduler_running = False
+            
+            if hasattr(self, 'scheduled_timers'):
+                for timer in self.scheduled_timers:
+                    try:
+                        timer.cancel()
+                    except:
+                        pass
+                self.scheduled_timers = []
         
         self.scheduler_status_label.config(text="Scheduler: STOPPED", foreground="red")
-        self.start_scheduler_btn.config(text="▶ Start", state=tk.NORMAL)
-        self.stop_scheduler_btn.config(text="⏹ Stop", state=tk.DISABLED)
+        self.start_scheduler_btn.config(state=tk.NORMAL)
+        self.stop_scheduler_btn.config(state=tk.DISABLED)
     
     def check_and_start_scheduler(self):
         """Check if there are enabled tasks and start scheduler"""
@@ -1905,6 +1766,21 @@ Scripts required in the same directory:
                 task_func()
             except:
                 pass
+    
+    def toggle_dark_mode(self):
+        """Toggle dark mode for the application"""
+        self.setup_styles()
+        self._setup_listbox_colors()
+        self.update_task_list()
+        
+        # Force refresh of log text areas
+        for widget in [self.download_status, self.retry_status, self.move_status, self.details_text, self.task_logs]:
+            if widget:
+                current_text = widget.get(1.0, tk.END)
+                widget.delete(1.0, tk.END)
+                widget.insert(1.0, current_text)
+        
+        self.save_settings()
     
     def browse_scripts_dir(self):
         """Browse for scripts directory"""
@@ -2033,19 +1909,23 @@ Scripts required in the same directory:
     def load_tasks(self):
         """Load scheduled tasks from JSON file"""
         if not self.tasks_file.exists():
+            self.display_to_task_id = {}
             return
         
         try:
             with open(self.tasks_file, "r") as f:
                 tasks_data = json.load(f)
             
+            self.tasks = {}
             for data in tasks_data:
                 task = ScheduledTask.from_dict(data)
                 self.tasks[task.id] = task
             
+            self.display_to_task_id = {}
             self.update_task_list()
         except Exception as e:
             print(f"Failed to load tasks: {e}")
+            self.display_to_task_id = {}
     
     def load_settings(self):
         """Load settings from JSON file"""
@@ -2082,11 +1962,12 @@ Scripts required in the same directory:
             
             self.current_browse_dir = settings.get("current_browse_dir", str(Path.cwd()))
             
-            # Load dark mode setting
             dark_mode = settings.get("dark_mode", False)
             self.dark_mode.set(dark_mode)
             if dark_mode:
-                self.toggle_dark_mode()
+                self.setup_styles()
+                self._setup_listbox_colors()
+                self.update_task_list()
             
             return True
         except Exception as e:
@@ -2094,12 +1975,10 @@ Scripts required in the same directory:
             return False
     
     def on_closing(self):
-        """Handle window closing - exit on Linux, minimize to tray on Windows"""
+        """Handle window closing - minimize to tray on Windows, exit on Linux"""
         if self.tray_enabled:
-            # On Windows, minimize to tray
             self.minimize_to_tray()
         else:
-            # On Linux, exit completely
             self.quit_application()
     
     def stop_current_download(self):
