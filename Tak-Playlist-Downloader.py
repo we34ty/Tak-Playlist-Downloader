@@ -16,7 +16,6 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from pathlib import Path
 from datetime import datetime, time, timedelta
 import time as time_module
-import schedule
 import uuid
 from queue import Queue
 import atexit
@@ -67,6 +66,12 @@ class ScheduledTask:
         self.last_run = None
         self.next_run = None
         self.process = None
+        
+        # New fields for tracking interval progress
+        self.last_completion_time = None  # When the last download finished
+        self.last_start_time = None       # When the last download started
+        self.remaining_downloads = None   # For playlist resume (number of videos left)
+        self.interrupted = False           # Whether the last run was interrupted
     
     def to_dict(self):
         """Convert to dictionary for JSON serialization"""
@@ -88,13 +93,17 @@ class ScheduledTask:
             "format": self.format,
             "quality": self.quality,
             "enable_archive": self.enable_archive,
-            "enabled": self.enabled
+            "enabled": self.enabled,
+            "last_completion_time": self.last_completion_time,
+            "last_start_time": self.last_start_time,
+            "remaining_downloads": self.remaining_downloads,
+            "interrupted": self.interrupted
         }
     
     @classmethod
     def from_dict(cls, data):
         """Create from dictionary"""
-        return cls(
+        task = cls(
             task_id=data["id"],
             name=data["name"],
             playlist_url=data["playlist_url"],
@@ -114,6 +123,47 @@ class ScheduledTask:
             enable_archive=data["enable_archive"],
             enabled=data["enabled"]
         )
+        # Restore tracking fields
+        task.last_completion_time = data.get("last_completion_time")
+        task.last_start_time = data.get("last_start_time")
+        task.remaining_downloads = data.get("remaining_downloads")
+        task.interrupted = data.get("interrupted", False)
+        return task
+    
+    def get_next_interval_run_time(self):
+        """Calculate when the next run should occur based on interval and last completion"""
+        # Get the appropriate reference time (prefer completion time over start time)
+        reference_time = self.last_completion_time
+        if reference_time is None:
+            reference_time = self.last_run
+        
+        if reference_time is None:
+            # Never ran before, run now
+            return datetime.now()
+        
+        try:
+            last_run_time = datetime.fromisoformat(reference_time)
+            
+            if self.schedule_type == "minutes":
+                next_run = last_run_time + timedelta(minutes=self.interval)
+            elif self.schedule_type == "hours":
+                next_run = last_run_time + timedelta(hours=self.interval)
+            elif self.schedule_type == "days":
+                next_run = last_run_time + timedelta(days=self.interval)
+            elif self.schedule_type == "weeks":
+                next_run = last_run_time + timedelta(weeks=self.interval)
+            elif self.schedule_type == "months":
+                next_run = last_run_time + timedelta(days=self.interval * 30)
+            else:
+                return datetime.now()
+            
+            # If next run is more than 5 seconds in the past, run now
+            if next_run <= datetime.now():
+                return datetime.now()
+            
+            return next_run
+        except:
+            return datetime.now()
 
 
 class YouTubeDownloaderGUI:
@@ -834,7 +884,8 @@ Categories=AudioVideo;Network;
         ttk.Button(task_btn_frame, text="Edit Task", command=self.show_edit_task_dialog).pack(side=tk.LEFT, padx=2)
         ttk.Button(task_btn_frame, text="Delete Task", command=self.delete_task).pack(side=tk.LEFT, padx=2)
         ttk.Button(task_btn_frame, text="Run Now", command=self.run_task_now).pack(side=tk.LEFT, padx=2)
-        
+        ttk.Button(task_btn_frame, text="Reset Interrupted", command=self.reset_interrupted_task).pack(side=tk.LEFT, padx=2)
+
         # Enable/Disable toggle
         self.enable_task_var = tk.BooleanVar()
         ttk.Checkbutton(left_panel, text="Task Enabled", variable=self.enable_task_var, command=self.toggle_task_enabled).pack(anchor=tk.W, pady=5)
@@ -1349,20 +1400,36 @@ Scripts required in the same directory:
         # Update details text
         self.details_text.delete(1.0, tk.END)
         details = f"""Name: {task.name}
-Playlist URL: {task.playlist_url}
-Output Directory: {task.output_dir}
-Schedule: Every {task.interval} {task.schedule_type}
-"""
+    Playlist URL: {task.playlist_url}
+    Output Directory: {task.output_dir}
+    Schedule: Every {task.interval} {task.schedule_type}
+    """
         if task.enable_specific_time:
             details += f"Specific Time: {task.specific_hour}:{task.specific_minute}\n"
         if task.enable_time_window:
             details += f"Time Window: {task.start_hour}:{task.start_minute} - {task.end_hour}:{task.end_minute}\n"
         details += f"""Format: {task.format}
-Quality: {task.quality}
-Archive Recovery: {'Yes' if task.enable_archive else 'No'}
-Enabled: {'Yes' if task.enabled else 'No'}
-Last Run: {task.last_run if task.last_run else 'Never'}
-"""
+    Quality: {task.quality}
+    Archive Recovery: {'Yes' if task.enable_archive else 'No'}
+    Enabled: {'Yes' if task.enabled else 'No'}
+    Last Run: {task.last_run if task.last_run else 'Never'}
+    """
+        
+        # Add progress information
+        if task.interrupted and task.remaining_downloads is not None:
+            details += f"\n⚠️ Last run was interrupted! {task.remaining_downloads} videos remaining.\n"
+            details += f"   Will resume on next scheduled run.\n"
+        elif task.running:
+            details += f"\n🟢 Currently running...\n"
+        elif task.last_completion_time:
+            try:
+                last = datetime.fromisoformat(task.last_completion_time)
+                if not task.enable_specific_time:
+                    next_run = task.get_next_interval_run_time()
+                    details += f"\nNext run will be approximately: {next_run.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            except:
+                pass
+        
         self.details_text.insert(1.0, details)
         
         # Update enable checkbox
@@ -1421,6 +1488,22 @@ Last Run: {task.last_run if task.last_run else 'Never'}
         task = self.tasks.get(task_id)
         if task:
             self.execute_task(task)
+
+    def reset_interrupted_task(self):
+        """Reset an interrupted task so it starts fresh next time"""
+        selection = self.task_listbox.curselection()
+        if not selection:
+            return
+        
+        task_id = self.task_listbox.get(selection[0]).split(" - ")[0]
+        task = self.tasks.get(task_id)
+        if task and messagebox.askyesno("Confirm Reset", f"Reset '{task.name}'?\n\nThis will clear the interrupted state and the task will start fresh on next run."):
+            task.interrupted = False
+            task.remaining_downloads = None
+            task.last_completion_time = None
+            self.save_tasks()
+            self.on_task_select(None)  # Refresh display
+            self.add_task_log(task_id, f"RESET: {task.name} - Interrupted state cleared")
     
     def show_edit_task_dialog(self):
         """Show edit dialog for selected task"""
@@ -1459,15 +1542,34 @@ Last Run: {task.last_run if task.last_run else 'Never'}
             self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
             return
         
-        task.running = True
-        task.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.save_tasks()
+        # For interval-based tasks, check if it's time to run based on last completion
+        if not task.enable_specific_time:
+            next_run = task.get_next_interval_run_time()
+            if next_run > datetime.now():
+                # Not time yet, reschedule
+                delay = (next_run - datetime.now()).total_seconds()
+                timer = threading.Timer(delay, self._execute_wrapper, args=[task, False])
+                timer.daemon = True
+                timer.start()
+                self.scheduled_timers.append(timer)
+                return
         
-        self.add_task_log(task.id, f"START: {task.name}")
+        task.running = True
+        task.last_start_time = datetime.now().isoformat()
+        
+        # Track if this is a resume (was interrupted)
+        is_resume = task.interrupted and task.remaining_downloads is not None
+        
+        if is_resume:
+            self.add_task_log(task.id, f"RESUME: {task.name} - Resuming from previous run")
+            task.interrupted = False
+        else:
+            self.add_task_log(task.id, f"START: {task.name}")
+        
+        self.save_tasks()
         
         def run_task():
             try:
-                # Build command
                 cmd = self.build_task_command(task)
                 if not cmd:
                     self.add_task_log(task.id, f"ERROR: {task.name} - Failed to build command")
@@ -1493,26 +1595,42 @@ Last Run: {task.last_run if task.last_run else 'Never'}
                     clean_line = strip_ansi_codes(line).strip()
                     if clean_line:
                         self.add_task_log(task.id, clean_line)
+                        
+                        # Track progress
+                        progress_match = re.search(r'\[(\d+)/(\d+)\]', clean_line)
+                        if progress_match:
+                            current = int(progress_match.group(1))
+                            total = int(progress_match.group(2))
+                            task.remaining_downloads = total - current
+                            self.save_tasks()
                 
-                task.process.wait()
+                return_code = task.process.wait()
                 task.process = None
-                self.add_task_log(task.id, f"COMPLETE: {task.name}")
                 
-                # Update next run time
-                self.update_task_next_run(task)
+                if return_code == 0:
+                    task.last_completion_time = datetime.now().isoformat()
+                    task.remaining_downloads = None
+                    task.interrupted = False
+                    task.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.add_task_log(task.id, f"COMPLETE: {task.name}")
+                else:
+                    task.interrupted = True
+                    self.add_task_log(task.id, f"INTERRUPTED: {task.name} (exit code: {return_code})")
+                
+                self.save_tasks()
                 
             except Exception as e:
+                task.interrupted = True
                 self.add_task_log(task.id, f"ERROR: {task.name} - {str(e)}")
+                self.save_tasks()
             finally:
                 task.running = False
+                # The task will be rescheduled by the wrapper if needed
         
         thread = threading.Thread(target=run_task, daemon=True)
         thread.start()
-        
-        # Update next run time
-        self.update_task_next_run(task)
     
-    def build_task_command(self, task):
+    def build_task_command(self, task, resume=False):
         """Build command for a scheduled task"""
         script_path = self.script_dir / f"Download-Playlist{self.script_ext}"
         
@@ -1534,6 +1652,9 @@ Last Run: {task.last_run if task.last_run else 'Never'}
         if task.enable_archive:
             cmd.append("-a")
         
+        # Note: Resume functionality is handled by the script's own resume capability
+        # (it checks for existing .TakData files)
+        
         return cmd
     
     def update_task_next_run(self, task):
@@ -1553,73 +1674,216 @@ Last Run: {task.last_run if task.last_run else 'Never'}
     
     def start_global_scheduler(self):
         """Start the global scheduler to run all enabled tasks"""
+        if self.scheduler_running:
+            self.stop_global_scheduler()
+        
         self.scheduler_running = True
-        schedule.clear()
+        self.scheduled_timers = []
         
         for task_id, task in self.tasks.items():
             if not task.enabled:
                 continue
             
-            job = None
-            if task.schedule_type == "minutes":
-                job = schedule.every(task.interval).minutes
-            elif task.schedule_type == "hours":
-                job = schedule.every(task.interval).hours
-            elif task.schedule_type == "days":
-                job = schedule.every(task.interval).days
-            elif task.schedule_type == "weeks":
-                job = schedule.every(task.interval).weeks
-            elif task.schedule_type == "months":
-                job = schedule.every(task.interval * 4).weeks
-            
             if task.enable_specific_time:
-                job = job.at(f"{task.specific_hour}:{task.specific_minute}")
-            
-            if job:
-                job.do(self.execute_task, task)
-                self.add_task_log(task_id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type}")
+                self._schedule_specific_time_task(task)
+            else:
+                self._schedule_interval_task(task)
         
-        # Update UI for running state
-        self.start_scheduler_btn.config(
-            text="▶ Running", 
-            state=tk.DISABLED,
-            style="Running.TButton"
-        )
-        self.stop_scheduler_btn.config(
-            text="⏹ Stop", 
-            state=tk.NORMAL,
-            style="TButton"
-        )
         self.scheduler_status_label.config(text="Scheduler: RUNNING", foreground="green")
+        self.start_scheduler_btn.config(text="▶ Running", state=tk.DISABLED)
+        self.stop_scheduler_btn.config(text="⏹ Stop", state=tk.NORMAL)
+
+    def _schedule_specific_time_task(self, task):
+        """Schedule a task at a specific time of day"""
+        now = datetime.now()
+        target_time = now.replace(hour=int(task.specific_hour), minute=int(task.specific_minute), second=0, microsecond=0)
         
-        # Start scheduler thread if not running
-        if not hasattr(self, '_scheduler_thread') or not self._scheduler_thread or not self._scheduler_thread.is_alive():
-            self._scheduler_thread = threading.Thread(target=self._run_scheduler_loop, daemon=True)
-            self._scheduler_thread.start()
+        if target_time <= now:
+            target_time += timedelta(days=1)
+        
+        delay_seconds = (target_time - now).total_seconds()
+        
+        def run_and_reschedule():
+            if not self.scheduler_running:
+                return
+            
+            # Execute the task
+            self._execute_and_reschedule(task, is_specific=True)
+        
+        timer = threading.Timer(delay_seconds, run_and_reschedule)
+        timer.daemon = True
+        timer.start()
+        self.scheduled_timers.append(timer)
+        
+        self.add_task_log(task.id, f"SCHEDULED: {task.name} at {task.specific_hour}:{task.specific_minute} (in {int(delay_seconds/60)} minutes)")
+
+    def _schedule_interval_task(self, task):
+        """Schedule an interval-based task based on last completion time"""
+        now = datetime.now()
+        next_run = task.get_next_interval_run_time()
+        
+        # If next_run is None or in the past, run immediately
+        if next_run is None or next_run <= now:
+            self.add_task_log(task.id, f"STARTING: {task.name} - Running now")
+            threading.Thread(target=self._execute_and_reschedule, args=(task, False), daemon=True).start()
+            return
+        
+        delay_seconds = (next_run - now).total_seconds()
+        
+        def run_and_reschedule():
+            if not self.scheduler_running:
+                return
+            self._execute_and_reschedule(task, is_specific=False)
+        
+        timer = threading.Timer(delay_seconds, run_and_reschedule)
+        timer.daemon = True
+        timer.start()
+        self.scheduled_timers.append(timer)
+        
+        # Format delay for display
+        if delay_seconds < 60:
+            self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds)} seconds)")
+        elif delay_seconds < 3600:
+            self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds/60)} minutes)")
+        else:
+            self.add_task_log(task.id, f"SCHEDULED: {task.name} every {task.interval} {task.schedule_type} (in {int(delay_seconds/3600)} hours)")
+
+    def _execute_and_reschedule(self, task, is_specific):
+        """Execute a task and then reschedule it for its next run"""
+        if not self.scheduler_running:
+            return
+        
+        # Check if task is already running
+        if task.running:
+            self.add_task_log(task.id, f"SKIP: {task.name} - Already running")
+            # Reschedule anyway
+            if is_specific:
+                self._schedule_specific_time_task(task)
+            else:
+                self._schedule_interval_task(task)
+            return
+        
+        # Check time window
+        if not self.is_within_time_window(task):
+            self.add_task_log(task.id, f"SKIP: {task.name} - Outside time window")
+            # Reschedule for next interval
+            if is_specific:
+                self._schedule_specific_time_task(task)
+            else:
+                self._schedule_interval_task(task)
+            return
+        
+        # Run the task
+        self.execute_task(task, is_specific)
+
+    def execute_task(self, task, is_specific):
+        """Execute a scheduled task"""
+        task.running = True
+        task.last_start_time = datetime.now().isoformat()
+        
+        is_resume = task.interrupted and task.remaining_downloads is not None
+        
+        if is_resume:
+            self.add_task_log(task.id, f"RESUME: {task.name}")
+            task.interrupted = False
+        else:
+            self.add_task_log(task.id, f"START: {task.name}")
+        
+        self.save_tasks()
+        
+        def run_task():
+            try:
+                cmd = self.build_task_command(task)
+                if not cmd:
+                    self.add_task_log(task.id, f"ERROR: {task.name} - Failed to build command")
+                    task.running = False
+                    self._schedule_next_after_completion(task, is_specific)
+                    return
+                
+                process_flags = {}
+                if self.os_type == "Windows":
+                    process_flags['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
+                task.process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    cwd=str(self.script_dir),
+                    **process_flags
+                )
+                
+                for line in task.process.stdout:
+                    clean_line = strip_ansi_codes(line).strip()
+                    if clean_line:
+                        self.add_task_log(task.id, clean_line)
+                        
+                        # Track progress
+                        progress_match = re.search(r'\[(\d+)/(\d+)\]', clean_line)
+                        if progress_match:
+                            current = int(progress_match.group(1))
+                            total = int(progress_match.group(2))
+                            task.remaining_downloads = total - current
+                            self.save_tasks()
+                
+                return_code = task.process.wait()
+                task.process = None
+                
+                if return_code == 0:
+                    task.last_completion_time = datetime.now().isoformat()
+                    task.remaining_downloads = None
+                    task.interrupted = False
+                    task.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.add_task_log(task.id, f"COMPLETE: {task.name}")
+                else:
+                    task.interrupted = True
+                    self.add_task_log(task.id, f"INTERRUPTED: {task.name} (exit code: {return_code})")
+                
+                self.save_tasks()
+                
+            except Exception as e:
+                task.interrupted = True
+                self.add_task_log(task.id, f"ERROR: {task.name} - {str(e)}")
+                self.save_tasks()
+            finally:
+                task.running = False
+                self._schedule_next_after_completion(task, is_specific)
+        
+        thread = threading.Thread(target=run_task, daemon=True)
+        thread.start()
+
+    def _schedule_next_after_completion(self, task, is_specific):
+        """Schedule the next run after a task completes"""
+        if not self.scheduler_running or not task.enabled:
+            return
+        
+        if is_specific:
+            # For specific time, schedule for next day
+            self._schedule_specific_time_task(task)
+        else:
+            # For interval tasks, schedule based on completion time
+            # Update the last_completion_time to now for interval calculation
+            task.last_completion_time = datetime.now().isoformat()
+            self.save_tasks()
+            self._schedule_interval_task(task)
 
     def stop_global_scheduler(self):
         """Stop the global scheduler"""
         self.scheduler_running = False
-        schedule.clear()
         
-        # Update UI for stopped state
-        self.start_scheduler_btn.config(
-            text="▶ Start", 
-            state=tk.NORMAL,
-            style="TButton"
-        )
-        self.stop_scheduler_btn.config(
-            text="⏹ Stopped", 
-            state=tk.DISABLED,
-            style="Disabled.TButton"
-        )
+        # Cancel all pending timers
+        for timer in self.scheduled_timers:
+            try:
+                timer.cancel()
+            except:
+                pass
+        self.scheduled_timers = []
+        
         self.scheduler_status_label.config(text="Scheduler: STOPPED", foreground="red")
-    
-    def _run_scheduler_loop(self):
-        """Run the scheduler loop in background"""
-        while self.scheduler_running:
-            schedule.run_pending()
-            time_module.sleep(1)
+        self.start_scheduler_btn.config(text="▶ Start", state=tk.NORMAL)
+        self.stop_scheduler_btn.config(text="⏹ Stop", state=tk.DISABLED)
     
     def check_and_start_scheduler(self):
         """Check if there are enabled tasks and start scheduler"""
