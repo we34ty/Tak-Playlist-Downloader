@@ -5,11 +5,13 @@ param(
 	[int]$t,
 	[string]$f,
 	[string]$q,
+	[string]$b,
 	[switch]$a,
 	[switch]$h
 )
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$Browser = "firefox"  # Default
 
 # ========== CHECK AND INSTALL WINGET (Windows 10/11) ==========
 function Install-Winget {
@@ -204,7 +206,7 @@ function Write-Cyan { Write-Host $args -ForegroundColor Cyan }
 function Write-Magenta { Write-Host $args -ForegroundColor Magenta }
 
 function Show-Help {
-	Write-Host "Usage: .\Download-Playlist.ps1 -p <PLAYLIST_URL> [-o <OUTPUT_DIR>] [-t <SECONDS>] [-f <FORMAT>] [-q <QUALITY>] [-a] [-h]" -ForegroundColor Cyan
+	Write-Host "Usage: .\Download-Playlist.ps1 -p <PLAYLIST_URL> [-o <OUTPUT_DIR>] [-t <SECONDS>] [-f <FORMAT>] [-q <QUALITY>] [-b <BROWSER>] [-a] [-h]" -ForegroundColor Cyan
 	Write-Host ""
 	Write-Host "Required:"
 	Write-Host "  -p <URL>        YouTube playlist URL"
@@ -214,8 +216,7 @@ function Show-Help {
 	Write-Host "  -t <SECONDS>    Sleep between downloads (default: 11, 0 = no delay)"
 	Write-Host "  -f <FORMAT>     Output format: mp3, m4a, opus, flac, mp4, webm, etc. (default: mp3)"
 	Write-Host "  -q <QUALITY>    Quality: low, mid, high (default: mid)"
-	Write-Host "                Audio: low(80k), mid(192k), high(320k)"
-	Write-Host "                Video: low(worst), mid(480p), high(best)"
+	Write-Host "  -b <BROWSER>    Browser for cookies: firefox, chrome, chromium, brave, edge, opera, vivaldi, safari, none (default: firefox)"
 	Write-Host "  -a              Enable archive recovery for deleted videos"
 	Write-Host "  -h             Show this help"
 	Write-Host ""
@@ -239,13 +240,18 @@ $HAS_O = $PSBoundParameters.ContainsKey('o')
 $HAS_T = $PSBoundParameters.ContainsKey('t')
 $HAS_F = $PSBoundParameters.ContainsKey('f')
 $HAS_Q = $PSBoundParameters.ContainsKey('q')
+$HAS_B = $PSBoundParameters.ContainsKey('b')
 $HAS_A = $PSBoundParameters.ContainsKey('a')
+$HAS_H = $PSBoundParameters.ContainsKey('h')
+
+if ($HAS_H) { Show-Help; exit 0 }
 
 if ($HAS_P) { $PlaylistUrl = $p }
 if ($HAS_O) { $OutputDir = $o }
 if ($HAS_T) { $SleepInterval = $t }
 if ($HAS_F) { $Format = $f }
 if ($HAS_Q) { $Quality = $q }
+if ($HAS_B) { $Browser = $b }
 if ($HAS_A) { $EnableArchive = $a }
 
 # Normalize path
@@ -269,6 +275,7 @@ if ($HAS_P) {
 		SleepInterval = $SleepInterval
 		Format = $Format
 		Quality = $Quality
+		Browser = $Browser
 		EnableArchive = $EnableArchive
 		LastUpdated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 	}
@@ -289,12 +296,18 @@ else {
 		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
 		if (-not $HAS_F) { $Format = $savedConfig.Format }
 		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
+		if (-not $HAS_B) { 
+			if ($savedConfig.PSObject.Properties.Name -contains 'Browser') {
+				$Browser = $savedConfig.Browser 
+			}
+		}
 		if (-not $HAS_A) { $EnableArchive = $savedConfig.EnableArchive }
 		
 		Write-Green "[INFO] Using saved settings:"
 		Write-Host "  Playlist URL: $PlaylistUrl"
 		Write-Host "  Format: $Format"
 		Write-Host "  Quality: $Quality"
+		Write-Host "  Browser: $Browser"
 		Write-Host "  Delay: ${SleepInterval}s"
 		Write-Host "  Archive recovery: $(if ($EnableArchive) { 'ON' } else { 'OFF' })"
 		Write-Host ""
@@ -437,39 +450,182 @@ switch ($FormatLower) {
 	}
 }
 
-# ========== ARCHIVE SEARCH FUNCTIONS ==========
-function Extract-Metadata {
-	param([string]$html)
+# ============================================================================
+# ========== ARCHIVE SEARCH FUNCTIONS (FIXED) ================================
+# ============================================================================
+# These functions now try multiple URL variants and use the correct APIs:
+#   - Wayback: CDX API with matchType=prefix across all YouTube URL forms
+#   - Archive.org: Advanced Search API to find items by video ID
+#   - GhostArchive: Direct download attempt (no pre-check that can fail on Cloudflare)
+# ============================================================================
+
+function Search-Wayback {
+	param(
+		[string]$video_id,
+		[string]$outputFile
+	)
 	
-	$title = ""
-	$author = ""
+	Write-Blue "     -> Checking Wayback Machine..."
 	
-	if ($html -match '<title>(.*?)</title>') {
-		$title = $matches[1] -replace ' - YouTube', '' -replace ' - GhostArchive', ''
-	}
-	if (-not $title -and $html -match '<meta property="og:title" content="([^"]+)"') {
-		$title = $matches[1]
-	}
-	if (-not $title -and $html -match '"title":"([^"]+)"') {
-		$title = $matches[1] -replace '\\u0026', '&'
+	# Try multiple URL variants since Wayback captures videos under many formats
+	$urlVariants = @(
+		"youtube.com/watch?v=$video_id",
+		"www.youtube.com/watch?v=$video_id",
+		"youtu.be/$video_id",
+		"m.youtube.com/watch?v=$video_id",
+		"youtube.com/embed/$video_id",
+		"www.youtube.com/embed/$video_id"
+	)
+	
+	$foundTimestamp = $null
+	$foundOriginal = $null
+	$matchedVariant = $null
+	
+	foreach ($variant in $urlVariants) {
+		try {
+			# Use matchType=prefix to catch extra query params
+			$cdxUrl = "https://web.archive.org/cdx/search/cdx?url=$variant&matchType=prefix&output=json&limit=5&fl=timestamp,original,statuscode&filter=statuscode:200"
+			
+			$response = Invoke-WebRequest -Uri $cdxUrl -UseBasicParsing -TimeoutSec 20 -ErrorAction SilentlyContinue
+			if (-not $response -or -not $response.Content) { continue }
+			
+			$content = $response.Content.Trim()
+			if ($content -eq '[]' -or $content -eq '' -or $content -eq 'null') { continue }
+			
+			$data = $content | ConvertFrom-Json
+			if ($data.Count -gt 1) {
+				# First row is headers, second row is first snapshot
+				# Format: [["timestamp","original","statuscode"],["20230101...","http://...","200"],...]
+				$firstSnap = $data[1]
+				$foundTimestamp = $firstSnap[0]
+				$foundOriginal = $firstSnap[1]
+				$matchedVariant = $variant
+				break
+			}
+		} catch {
+			continue
+		}
 	}
 	
-	if ($html -match '"ownerChannelName":"([^"]+)"') {
-		$author = $matches[1]
-	}
-	if (-not $author -and $html -match '"author":"([^"]+)"') {
-		$author = $matches[1]
-	}
-	if (-not $author -and $html -match '<link itemprop="name" content="([^"]+)"') {
-		$author = $matches[1]
+	if (-not $foundTimestamp -or -not $foundOriginal) {
+		Write-Red "     [X] Not found on Wayback Machine"
+		return $false
 	}
 	
-	$title = $title -replace '^[\s-]+|[\s-]+$', ''
-	$author = $author -replace '^[\s-]+|[\s-]+$', ''
+	# Build the Wayback URL using the ACTUAL archived original URL
+	$waybackUrl = "https://web.archive.org/web/${foundTimestamp}if_/$foundOriginal"
 	
-	return @{ Title = $title; Author = $author }
+	Write-Green "     [OK] Found on Wayback (capture $foundTimestamp)"
+	Write-Blue "       Matched variant: $matchedVariant"
+	Write-Blue "       URL: $waybackUrl"
+	
+	# Try to download
+	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --output $outputFile $waybackUrl 2>$null
+	if ($LASTEXITCODE -eq 0) {
+		Write-Green "     Download successful from Wayback Machine"
+		return $true
+	}
+	
+	return $false
 }
 
+function Search-GhostArchive {
+	param(
+		[string]$video_id,
+		[string]$outputFile
+	)
+	
+	Write-Blue "     -> Checking GhostArchive..."
+	
+	$ghostUrl = "https://ghostarchive.org/varchive/youtube/$video_id"
+	
+	# Skip the pre-check and just try the download.
+	# GhostArchive returns 200 for real videos and 404/redirect for missing ones.
+	# The old HEAD check returned 403 from Cloudflare even when the video was downloadable.
+	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 --output $outputFile $ghostUrl 2>$null
+	
+	if ($LASTEXITCODE -eq 0) {
+		Write-Green "     [OK] Downloaded from GhostArchive"
+		return $true
+	}
+	
+	Write-Red "     [X] Not found on GhostArchive"
+	return $false
+}
+
+function Search-ArchiveOrg {
+	param(
+		[string]$video_id,
+		[string]$outputFile
+	)
+	
+	Write-Blue "     -> Checking Archive.org..."
+	
+	# First try the common identifier format (fast path)
+	$directUrl = "https://archive.org/details/youtube-$video_id"
+	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 -f "bestvideo+bestaudio/best" --output $outputFile $directUrl 2>$null
+	
+	if ($LASTEXITCODE -eq 0) {
+		Write-Green "     [OK] Downloaded from Archive.org (direct)"
+		return $true
+	}
+	
+	# Fallback: search Archive.org for items mentioning the video ID
+	try {
+		$searchUrl = "https://archive.org/advancedsearch.php?q=youtube+${video_id}&fl[]=identifier&rows=5&output=json"
+		$searchResponse = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
+		
+		if ($searchResponse -and $searchResponse.Content) {
+			$searchData = $searchResponse.Content | ConvertFrom-Json
+			$docs = $searchData.response.docs
+			
+			if ($docs -and $docs.Count -gt 0) {
+				$identifier = $docs[0].identifier
+				
+				if ($identifier) {
+					$itemUrl = "https://archive.org/details/$identifier"
+					Write-Blue "       Found Archive.org item: $identifier"
+					
+					& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 -f "bestvideo+bestaudio/best" --output $outputFile $itemUrl 2>$null
+					
+					if ($LASTEXITCODE -eq 0) {
+						Write-Green "     [OK] Downloaded from Archive.org (search)"
+						return $true
+					}
+				}
+			}
+		}
+	} catch {
+		# Ignore search errors and fall through
+	}
+	
+	Write-Red "     [X] Not found on Archive.org"
+	return $false
+}
+
+function Search-Hobune {
+	param(
+		[string]$video_id,
+		[string]$outputFile
+	)
+	
+	Write-Blue "     -> Checking Hobune.stream..."
+	
+	$hobuneUrl = "https://hobune.stream/yt/${video_id}.mp4"
+	
+	# Try direct download
+	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 15 --output $outputFile $hobuneUrl 2>$null
+	
+	if ($LASTEXITCODE -eq 0) {
+		Write-Green "     [OK] Downloaded from Hobune.stream"
+		return $true
+	}
+	
+	Write-Red "     [X] Not found on Hobune.stream"
+	return $false
+}
+
+# Master archive search function - tries all sources in order
 function Search-Archive {
 	param([string]$video_id)
 	
@@ -477,75 +633,36 @@ function Search-Archive {
 	
 	if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
 	
+	$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
+	
 	# Try 1: GhostArchive
-	try {
-		$ghostUrl = "https://ghostarchive.org/varchive/youtube/$video_id"
-		$response = Invoke-WebRequest -Uri $ghostUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
-		if ($response.StatusCode -eq 200) {
-			Write-Blue "     Found on GhostArchive, downloading..."
-			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
-			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $ghostUrl 2>$null
-			if ($LASTEXITCODE -eq 0) {
-				Write-Green "     Download successful from GhostArchive"
-				return $true
-			}
-		}
-	} catch { }
+	if (Search-GhostArchive -video_id $video_id -outputFile $outputFile) {
+		return $true
+	}
 	
-	# Try 2: Archive.org direct
-	try {
-		$archiveUrl = "https://archive.org/details/youtube-$video_id"
-		$response = Invoke-WebRequest -Uri $archiveUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
-		if ($response.StatusCode -eq 200) {
-			Write-Blue "     Found on Archive.org, downloading best format..."
-			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
-			& $YtDlpExe --no-warnings --no-playlist -f "bestvideo+bestaudio/best" --output $outputFile $archiveUrl 2>$null
-			if ($LASTEXITCODE -eq 0) {
-				Write-Green "     Download successful from Archive.org"
-				return $true
-			}
-		}
-	} catch { }
+	# Try 2: Archive.org
+	if (Search-ArchiveOrg -video_id $video_id -outputFile $outputFile) {
+		return $true
+	}
 	
-	# Try 3: Wayback Machine
-	try {
-		$waybackApi = "https://archive.org/wayback/available?url=https://youtube.com/watch?v=$video_id"
-		$response = Invoke-WebRequest -Uri $waybackApi -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
-		$content = $response.Content
-		
-		if ($content -match '"timestamp":"([0-9]+)"') {
-			$timestamp = $matches[1]
-			Write-Blue "     Found Wayback capture from $timestamp, attempting download..."
-			$embedUrl = "https://web.archive.org/web/${timestamp}if_/https://www.youtube.com/embed/$video_id"
-			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
-			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $embedUrl 2>$null
-			if ($LASTEXITCODE -eq 0) {
-				Write-Green "     Download successful from Wayback Machine"
-				return $true
-			}
-		}
-	} catch { }
+	# Try 3: Wayback Machine (FIXED - multi-variant CDX query)
+	if (Search-Wayback -video_id $video_id -outputFile $outputFile) {
+		return $true
+	}
 	
 	# Try 4: Hobune.stream
-	try {
-		$hobuneUrl = "https://hobune.stream/yt/${video_id}.mp4"
-		$response = Invoke-WebRequest -Uri $hobuneUrl -Method Head -UseBasicParsing -TimeoutSec 10 -ErrorAction SilentlyContinue
-		if ($response.StatusCode -eq 200) {
-			Write-Blue "     Found on Hobune.stream, downloading..."
-			$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
-			& $YtDlpExe --no-warnings --no-playlist --output $outputFile $hobuneUrl 2>$null
-			if ($LASTEXITCODE -eq 0) {
-				Write-Green "     Download successful from Hobune.stream"
-				return $true
-			}
-		}
-	} catch { }
+	if (Search-Hobune -video_id $video_id -outputFile $outputFile) {
+		return $true
+	}
 	
 	Write-Red "     Not found in any archive"
 	return $false
 }
 
-# ========== EXTRACT VIDEO IDS ==========
+# ============================================================================
+# ========== EXTRACT VIDEO IDS ================================================
+# ============================================================================
+
 Write-Green "========================================="
 Write-Green "Tak Playlist Downloader"
 Write-Green "========================================="
@@ -553,6 +670,7 @@ Write-Host "Output directory: $OutputDir"
 Write-Host "TakData directory: $TakDataPath"
 Write-Host "Format: $FormatLower ($DownloadType)"
 Write-Host "Quality: $Quality"
+Write-Host "Browser: $Browser"
 Write-Host "Delay: ${SleepInterval}s"
 Write-Host "Archive recovery: $(if ($EnableArchive) { 'ON' } else { 'OFF' })"
 Write-Host ""
@@ -561,10 +679,19 @@ if (-not (Test-Internet)) { Wait-ForInternet }
 
 Write-Blue "Fetching playlist..."
 Remove-Item $VideoIdsFile -ErrorAction SilentlyContinue
-& $YtDlpExe --cookies-from-browser firefox --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
-if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
-	& $YtDlpExe --cookies-from-browser firefox --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+
+if ($Browser -ne "none") {
+	& $YtDlpExe --cookies-from-browser $Browser --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+	if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
+		& $YtDlpExe --cookies-from-browser $Browser --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+	}
+} else {
+	& $YtDlpExe --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+	if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
+		& $YtDlpExe --extractor-args youtubetab:skip=authcheck --flat-playlist --print "%(id)s" $PlaylistUrl | Set-Content $VideoIdsFile
+	}
 }
+
 if (-not (Get-Content $VideoIdsFile | Where-Object { $_.Trim() })) {
 	Write-Red "ERROR: Could not extract video IDs"
 	Pop-Location
@@ -634,31 +761,92 @@ foreach ($video_id in $VideoIds) {
 	Write-Yellow "[$($Processed)/$Total] DOWNLOADING: $video_id"
 	if (-not (Test-Internet)) { Wait-ForInternet }
 	
-	$args = @()
-	$args += '--cookies-from-browser'; $args += 'firefox'
-	$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
-	foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
-	$args += '--embed-thumbnail'
-	$args += '--add-metadata'
-	$args += '--output'; $args += $OutputTemplate
-	$args += '--no-overwrites'
-	$args += '--continue'
-	$args += "https://youtube.com/watch?v=$video_id"
+	# ---- Robust download with multiple fallback methods ----
+	$downloadSuccess = $false
 	
-	try {
-		& $YtDlpExe @args 2>&1 | Out-Null
-		$exitCode = $LASTEXITCODE
-	} catch {
-		$exitCode = 1
+	# Method 1: Standard with cookies (if browser specified)
+	if ($Browser -ne "none") {
+		$args = @()
+		$args += '--cookies-from-browser'; $args += $Browser
+		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
+		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
+		$args += '--embed-thumbnail'
+		$args += '--add-metadata'
+		$args += '--output'; $args += $OutputTemplate
+		$args += '--no-overwrites'
+		$args += '--continue'
+		$args += '--no-check-certificate'
+		$args += "https://youtube.com/watch?v=$video_id"
+		
+		try {
+			& $YtDlpExe @args 2>&1 | Out-Null
+			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
+		} catch { }
 	}
 	
-	if ($exitCode -eq 0) {
+	# Method 2: Without cookies but with user agent
+	if (-not $downloadSuccess) {
+		$args = @()
+		$args += '--user-agent'; $args += 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
+		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
+		$args += '--embed-thumbnail'
+		$args += '--add-metadata'
+		$args += '--output'; $args += $OutputTemplate
+		$args += '--no-overwrites'
+		$args += '--continue'
+		$args += "https://youtube.com/watch?v=$video_id"
+		
+		try {
+			& $YtDlpExe @args 2>&1 | Out-Null
+			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
+		} catch { }
+	}
+	
+	# Method 3: Geo-bypass
+	if (-not $downloadSuccess) {
+		$args = @()
+		$args += '--geo-bypass'
+		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
+		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
+		$args += '--embed-thumbnail'
+		$args += '--add-metadata'
+		$args += '--output'; $args += $OutputTemplate
+		$args += '--no-overwrites'
+		$args += '--continue'
+		$args += "https://youtube.com/watch?v=$video_id"
+		
+		try {
+			& $YtDlpExe @args 2>&1 | Out-Null
+			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
+		} catch { }
+	}
+	
+	# Method 4: Android client (bypasses some restrictions)
+	if (-not $downloadSuccess) {
+		$args = @()
+		$args += '--extractor-args'; $args += 'youtube:player_client=android'
+		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
+		$args += '--embed-thumbnail'
+		$args += '--add-metadata'
+		$args += '--output'; $args += $OutputTemplate
+		$args += '--no-overwrites'
+		$args += '--continue'
+		$args += "https://youtube.com/watch?v=$video_id"
+		
+		try {
+			& $YtDlpExe @args 2>&1 | Out-Null
+			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
+		} catch { }
+	}
+	
+	if ($downloadSuccess) {
 		Write-Green "  [OK] Success - added to log"
 		Add-Content $DownloadedLog $video_id
 		Remove-FromFailedLog -video_id $video_id
 		$YoutubeSuccess++
 	} else {
-		Write-Red "  [X] YouTube failed"
+		Write-Red "  [X] YouTube failed after all attempts"
 		
 		if ($EnableArchive) {
 			Write-Blue "  -> Attempting archive recovery..."

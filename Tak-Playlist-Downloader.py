@@ -21,6 +21,14 @@ from queue import Queue
 import atexit
 import getpass
 
+REQUESTS_AVAILABLE = False
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    print("Note: requests not installed. Wayback Machine check not available.")
+    print("Install with: pip install requests")
+
 # Try to import pystray for system tray support
 PYSTRAY_AVAILABLE = False
 try:
@@ -571,7 +579,9 @@ class YouTubeDownloaderGUI:
         self.move_tab = ttk.Frame(self.notebook)
         self.scheduler_tab = ttk.Frame(self.notebook)
         self.settings_tab = ttk.Frame(self.notebook)
-        
+        self.wayback_tab = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.wayback_tab, text="Wayback Check")
         self.notebook.add(self.download_tab, text="Download Playlist")
         self.notebook.add(self.retry_tab, text="Retry Failed")
         self.notebook.add(self.move_tab, text="Move Recovered")
@@ -583,6 +593,7 @@ class YouTubeDownloaderGUI:
         self.setup_move_tab()
         self.setup_scheduler_tab()
         self.setup_settings_tab()
+        self.setup_wayback_tab()
     
     def setup_download_tab(self):
         """Setup the Download Playlist tab"""
@@ -1163,6 +1174,417 @@ Scripts required in the same directory:
         
         scrollable_frame.columnconfigure(1, weight=1)
     
+    def get_video_ids_from_file(self, filename):
+        """Read video IDs from a log file in the .TakData folder"""
+        output_dir = self.wayback_output.get().strip()
+        if not output_dir:
+            messagebox.showerror("Error", "Please select a working directory")
+            return []
+        
+        takdata_path = Path(output_dir) / self.tak_data_dir
+        file_path = takdata_path / filename
+        
+        if not file_path.exists():
+            messagebox.showwarning("Not Found", f"File not found: {file_path}")
+            return []
+        
+        try:
+            with open(file_path, 'r') as f:
+                video_ids = [line.strip() for line in f if line.strip()]
+            return video_ids
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read file: {e}")
+            return []
+
+    def get_wayback_snapshots(self, video_id):
+        """Query Wayback Machine CDX API for snapshots of a YouTube video.
+        Tries multiple URL variants since videos have been archived under many formats.
+        Returns list of snapshot dicts with keys 'timestamp', 'original', 'statuscode'.
+        """
+        # All the URL formats YouTube videos have been archived under
+        # Include the video ID as a substring so we catch all matches
+        url_variants = [
+            f"youtube.com/watch?v={video_id}",
+            f"www.youtube.com/watch?v={video_id}",
+            f"youtu.be/{video_id}",
+            f"m.youtube.com/watch?v={video_id}",
+            f"youtube.com/embed/{video_id}",
+            f"www.youtube.com/embed/{video_id}",
+        ]
+        
+        all_snapshots = []
+        seen_timestamps = set()
+        
+        for variant in url_variants:
+            try:
+                # Use matchType=prefix to catch URLs with extra query params
+                cdx_url = (
+                    f"https://web.archive.org/cdx/search/cdx"
+                    f"?url={variant}"
+                    f"&matchType=prefix"
+                    f"&output=json"
+                    f"&limit=20"
+                    f"&fl=timestamp,original,statuscode,mimetype"
+                )
+                
+                response = requests.get(cdx_url, timeout=25)
+                if response.status_code != 200:
+                    continue
+                if not response.text.strip():
+                    continue
+                
+                try:
+                    data = response.json()
+                except ValueError:
+                    # Sometimes returns empty or non-JSON
+                    continue
+                
+                if len(data) > 1:
+                    headers = data[0]
+                    for row in data[1:]:
+                        snap = dict(zip(headers, row))
+                        ts = snap.get('timestamp', '')
+                        # Deduplicate by timestamp
+                        if ts and ts not in seen_timestamps:
+                            seen_timestamps.add(ts)
+                            all_snapshots.append(snap)
+                            
+            except Exception as e:
+                print(f"Wayback API error for {video_id} ({variant}): {e}")
+                continue
+        
+        # Sort by timestamp (oldest first); the caller picks the latest
+        all_snapshots.sort(key=lambda s: s.get('timestamp', ''))
+        return all_snapshots
+
+    def build_wayback_url(self, video_id, timestamp=None, use_if_suffix=True):
+        """Construct a Wayback Machine URL for a video.
+        
+        If timestamp is None, returns a search URL for the Wayback Machine.
+        Otherwise returns the direct snapshot URL.
+        """
+        original = f"https://www.youtube.com/watch?v={video_id}"
+        
+        if timestamp:
+            if use_if_suffix:
+                return f"https://web.archive.org/web/{timestamp}if_/{original}"
+            else:
+                return f"https://web.archive.org/web/{timestamp}/{original}"
+        else:
+            # Search page — this always shows *something* the user can click
+            # Using the CDX search UI which shows all captures
+            return f"https://web.archive.org/web/*/{original}"
+
+    def extract_title_from_snapshot(self, video_id, timestamp, original_url=None):
+        """Extract video title from a Wayback Machine snapshot's HTML source."""
+        if not original_url:
+            original_url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        url_variants = [
+            f"https://web.archive.org/web/{timestamp}if_/{original_url}",
+            f"https://web.archive.org/web/{timestamp}/{original_url}",
+            f"https://web.archive.org/web/{timestamp}id_/{original_url}",
+        ]
+        
+        title_patterns = [
+            r'<meta\s+property=["\']og:title["\']\s+content=["\']([^"\']+)["\']',
+            r'<meta\s+content=["\']([^"\']+)["\']\s+property=["\']og:title["\']',
+            r'<meta\s+name=["\']twitter:title["\']\s+content=["\']([^"\']+)["\']',
+            r'<title[^>]*>([^<]+)</title>',
+            r'"name"\s*:\s*"([^"]{5,200})"',
+            r'itemprop=["\']name["\']\s+content=["\']([^"\']+)["\']',
+            r'"videoDetails":\s*\{[^}]*"title":\s*"([^"]+)"',
+        ]
+        
+        for url in url_variants:
+            try:
+                response = requests.get(url, timeout=25, allow_redirects=True)
+                if response.status_code != 200:
+                    continue
+                html = response.text
+                if len(html) < 100:
+                    continue
+                
+                for pattern in title_patterns:
+                    match = re.search(pattern, html, re.IGNORECASE)
+                    if match:
+                        title = match.group(1)
+                        title = title.replace('&amp;', '&')
+                        title = title.replace('&quot;', '"')
+                        title = title.replace('&#39;', "'")
+                        title = title.replace('&lt;', '<')
+                        title = title.replace('&gt;', '>')
+                        title = re.sub(r'\s*-\s*YouTube\s*$', '', title, flags=re.IGNORECASE)
+                        title = title.strip()
+                        
+                        if title and title.lower() not in ('youtube', 'before you continue to youtube', ''):
+                            return title
+                
+                return "(page found — title not parseable)"
+            except Exception as e:
+                print(f"Snapshot fetch error {url}: {e}")
+                continue
+        
+        return "N/A"
+
+    def run_wayback_check(self):
+        """Run the Wayback Machine check in a background thread"""
+        if not REQUESTS_AVAILABLE:
+            messagebox.showerror("Missing Dependency",
+                "The 'requests' library is required for Wayback Machine checks.\n\n"
+                "Install it with: pip install requests\n\n"
+                "If running the compiled executable, you must rebuild with requests included.")
+            return
+        
+        # Determine which file to read
+        if self.wayback_source.get() == "failed":
+            filename = "failed_ids.txt"
+        else:
+            filename = "permanently_failed_ids.txt"
+        
+        video_ids = self.get_video_ids_from_file(filename)
+        if not video_ids:
+            return
+        
+        # Clear previous results
+        self.wayback_tree.delete(*self.wayback_tree.get_children())
+        self.wayback_results.delete(1.0, tk.END)
+        
+        self.wayback_check_btn.config(state=tk.DISABLED)
+        self.wayback_progress.start(10)
+        self.wayback_running = True
+        
+        def check_worker():
+            total = len(video_ids)
+            found_count = 0
+            not_found_count = 0
+            
+            for i, video_id in enumerate(video_ids):
+                if not self.wayback_running:
+                    break
+                
+                self.root.after(0, lambda vid=video_id, idx=i, t=total:
+                    self.wayback_results.insert(tk.END, f"[{idx+1}/{t}] Checking {vid}...\n"))
+                self.root.after(0, lambda: self.wayback_results.see(tk.END))
+                
+                # Get snapshots from Wayback CDX API
+                snapshots = self.get_wayback_snapshots(video_id)
+                
+                if snapshots:
+                    # Prefer snapshots with status 200
+                    good_snaps = [s for s in snapshots if s.get('statuscode') == '200']
+                    if good_snaps:
+                        latest = good_snaps[-1]
+                    else:
+                        latest = snapshots[-1]
+                    
+                    timestamp = latest.get('timestamp', '')
+                    # Use the ACTUAL archived URL from the snapshot record
+                    original = latest.get('original', f"https://www.youtube.com/watch?v={video_id}")
+                    
+                    # Extract title from the snapshot
+                    title = self.extract_title_from_snapshot(video_id, timestamp, original)
+                    
+                    # Build the clickable snapshot URL
+                    snapshot_url = f"https://web.archive.org/web/{timestamp}if_/{original}"
+                    
+                    # Add to treeview
+                    self.root.after(0, lambda vid=video_id, t=title, u=snapshot_url:
+                        self.wayback_tree.insert("", tk.END, values=("✓ Found", vid, t, u)))
+                    found_count += 1
+                    
+                    self.root.after(0, lambda vid=video_id, t=title, ts=timestamp:
+                        self.wayback_results.insert(tk.END, f"    Found ({ts}): {t}\n"))
+                else:
+                    # Not found — still show a search URL
+                    search_url = f"https://web.archive.org/web/*/https://www.youtube.com/watch?v={video_id}"
+                    
+                    self.root.after(0, lambda vid=video_id, u=search_url:
+                        self.wayback_tree.insert("", tk.END,
+                            values=("✗ No capture", vid, "No archived snapshot", u)))
+                    not_found_count += 1
+                    
+                    self.root.after(0, lambda vid=video_id:
+                        self.wayback_results.insert(tk.END, f"    No snapshot found.\n"))
+                
+                self.root.after(0, lambda: self.wayback_results.see(tk.END))
+                time_module.sleep(1.0)
+            
+            summary = (f"\n===== SUMMARY =====\n"
+                    f"Total checked: {total}\n"
+                    f"Found in Wayback: {found_count}\n"
+                    f"Not found: {not_found_count}\n\n"
+                    f"Tip: Double-click any row to open its URL in browser.\n")
+            self.root.after(0, lambda: self.wayback_results.insert(tk.END, summary))
+            self.root.after(0, lambda: self.wayback_results.see(tk.END))
+            self.root.after(0, lambda: self.wayback_check_btn.config(state=tk.NORMAL))
+            self.root.after(0, self.wayback_progress.stop)
+        
+        thread = threading.Thread(target=check_worker, daemon=True)
+        thread.start()
+        
+        def check_worker():
+            total = len(video_ids)
+            found_count = 0
+            not_found_count = 0
+            
+            for i, video_id in enumerate(video_ids):
+                if not self.wayback_running:
+                    break
+                
+                self.root.after(0, lambda vid=video_id, idx=i, t=total: 
+                    self.wayback_results.insert(tk.END, f"[{idx+1}/{t}] Checking {vid}...\n"))
+                self.wayback_results.see(tk.END)
+                
+                # Get snapshots from Wayback CDX API
+                snapshots = self.get_wayback_snapshots(video_id)
+                
+                if snapshots:
+                    # Use the most recent snapshot
+                    latest = snapshots[-1]  # Last entry is usually most recent
+                    timestamp = latest.get('timestamp', '')
+                    original = latest.get('original', f"https://www.youtube.com/watch?v={video_id}")
+                    snapshot_url = f"https://web.archive.org/web/{timestamp}/{original}"
+                    
+                    # Extract title from snapshot
+                    title = self.extract_title_from_snapshot(snapshot_url)
+                    
+                    # Add to treeview
+                    self.root.after(0, lambda vid=video_id, t=title, u=snapshot_url: 
+                        self.wayback_tree.insert("", tk.END, values=("✓ Found", vid, t, u)))
+                    found_count += 1
+                else:
+                    self.root.after(0, lambda vid=video_id: 
+                        self.wayback_tree.insert("", tk.END, values=("✗ Not found", vid, "N/A", "N/A")))
+                    not_found_count += 1
+                
+                # Small delay to avoid rate limiting
+                time_module.sleep(1.0)
+            
+            # Summary
+            summary = f"\n===== SUMMARY =====\nTotal checked: {total}\nFound in Wayback: {found_count}\nNot found: {not_found_count}\n"
+            self.root.after(0, lambda: self.wayback_results.insert(tk.END, summary))
+            self.root.after(0, lambda: self.wayback_results.see(tk.END))
+            
+            # Re-enable button
+            self.root.after(0, lambda: self.wayback_check_btn.config(state=tk.NORMAL))
+            self.root.after(0, self.wayback_progress.stop)
+        
+        thread = threading.Thread(target=check_worker, daemon=True)
+        thread.start()
+
+    def stop_wayback_check(self):
+        """Stop the Wayback check"""
+        self.wayback_running = False
+        self.wayback_progress.stop()
+        self.wayback_check_btn.config(state=tk.NORMAL)
+
+    def copy_wayback_links(self):
+        """Copy all Wayback URLs from the treeview to clipboard"""
+        urls = []
+        for item in self.wayback_tree.get_children():
+            values = self.wayback_tree.item(item, "values")
+            if values[0] == "✓ Found" and values[3] != "N/A":
+                urls.append(values[3])
+        
+        if urls:
+            self.root.clipboard_clear()
+            self.root.clipboard_append("\n".join(urls))
+            messagebox.showinfo("Copied", f"Copied {len(urls)} URLs to clipboard")
+        else:
+            messagebox.showinfo("No URLs", "No Wayback URLs found to copy")
+
+    def open_wayback_url(self, event):
+        """Open the selected Wayback URL in browser on double-click"""
+        selection = self.wayback_tree.selection()
+        if not selection:
+            return
+        
+        values = self.wayback_tree.item(selection[0], "values")
+        # Column index 3 is the URL
+        if len(values) > 3 and values[3] and values[3] != "N/A":
+            import webbrowser
+            webbrowser.open(values[3])
+            
+    def setup_wayback_tab(self):
+        """Setup the Wayback Machine tab for checking archived videos"""
+        main_frame = ttk.Frame(self.wayback_tab, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+        
+        # Working Directory
+        ttk.Label(main_frame, text="Working Directory:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.wayback_output = ttk.Entry(main_frame, width=70)
+        self.wayback_output.grid(row=0, column=1, sticky=tk.W+tk.E, pady=3)
+        self.wayback_output.bind('<KeyRelease>', lambda e: self.save_settings())
+        ttk.Button(main_frame, text="Browse", command=lambda: self.browse_folder(self.wayback_output)).grid(row=0, column=2, padx=3)
+        ttk.Button(main_frame, text="Use Current", command=lambda: self.set_current_path(self.wayback_output)).grid(row=0, column=3, padx=3)
+        
+        # Video Source Selection
+        source_frame = ttk.LabelFrame(main_frame, text="Video Source", padding="8")
+        source_frame.grid(row=1, column=0, columnspan=4, sticky=tk.W+tk.E, pady=5)
+        
+        self.wayback_source = tk.StringVar(value="failed")
+        ttk.Radiobutton(source_frame, text="Failed Videos (failed_ids.txt)", 
+                        variable=self.wayback_source, value="failed").pack(anchor=tk.W, pady=2)
+        ttk.Radiobutton(source_frame, text="Permanently Failed Videos (permanently_failed_ids.txt)", 
+                        variable=self.wayback_source, value="permanent").pack(anchor=tk.W, pady=2)
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, columnspan=4, pady=8)
+        
+        self.wayback_check_btn = ttk.Button(button_frame, text="Check Wayback Machine", 
+                                            command=self.run_wayback_check)
+        self.wayback_check_btn.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(button_frame, text="Stop", command=self.stop_wayback_check).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Clear Results", 
+                command=lambda: self.wayback_results.delete(1.0, tk.END)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Copy All Links", 
+                command=self.copy_wayback_links).pack(side=tk.LEFT, padx=5)
+        
+        # Progress
+        self.wayback_progress = ttk.Progressbar(main_frame, mode='indeterminate')
+        self.wayback_progress.grid(row=3, column=0, columnspan=4, sticky=tk.W+tk.E, pady=3)
+        
+        # Results display
+        results_frame = ttk.LabelFrame(main_frame, text="Wayback Machine Results", padding="8")
+        results_frame.grid(row=4, column=0, columnspan=4, sticky=tk.W+tk.E+tk.N+tk.S, pady=5)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+        
+        # Use a Treeview for structured display
+        columns = ("status", "video_id", "title", "wayback_url")
+        self.wayback_tree = ttk.Treeview(results_frame, columns=columns, show="headings", height=15)
+        
+        self.wayback_tree.heading("status", text="Status")
+        self.wayback_tree.heading("video_id", text="Video ID")
+        self.wayback_tree.heading("title", text="Title")
+        self.wayback_tree.heading("wayback_url", text="Wayback URL")
+        
+        self.wayback_tree.column("status", width=100)
+        self.wayback_tree.column("video_id", width=100)
+        self.wayback_tree.column("title", width=350)
+        self.wayback_tree.column("wayback_url", width=400)
+        
+        # Scrollbars for treeview
+        tree_scroll_y = ttk.Scrollbar(results_frame, orient="vertical", command=self.wayback_tree.yview)
+        tree_scroll_x = ttk.Scrollbar(results_frame, orient="horizontal", command=self.wayback_tree.xview)
+        self.wayback_tree.configure(yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set)
+        
+        self.wayback_tree.grid(row=0, column=0, sticky=tk.W+tk.E+tk.N+tk.S)
+        tree_scroll_y.grid(row=0, column=1, sticky=tk.N+tk.S)
+        tree_scroll_x.grid(row=1, column=0, sticky=tk.W+tk.E)
+        
+        # Double-click to open URL
+        self.wayback_tree.bind("<Double-1>", self.open_wayback_url)
+        
+        # Also keep a text area for raw output
+        self.wayback_results = scrolledtext.ScrolledText(main_frame, height=6, width=80)
+        self.wayback_results.grid(row=5, column=0, columnspan=4, sticky=tk.W+tk.E, pady=5)
+
     def browse_folder_dialog(self, string_var):
         """Browse folder for dialog"""
         folder = filedialog.askdirectory(initialdir=self.current_browse_dir)
@@ -1884,6 +2306,9 @@ Last Run: {task.last_run if task.last_run else 'Never'}
             "scripts_dir": str(self.script_dir),
             "current_browse_dir": self.current_browse_dir,
             "dark_mode": self.dark_mode.get(),
+            "wayback": {
+                "output": self.wayback_output.get()
+            },
             "last_saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
@@ -1969,6 +2394,9 @@ Last Run: {task.last_run if task.last_run else 'Never'}
                 self._setup_listbox_colors()
                 self.update_task_list()
             
+            w = settings.get("wayback", {})
+            self.wayback_output.insert(0, w.get("output", ""))
+
             return True
         except Exception as e:
             print(f"Failed to load settings: {e}")

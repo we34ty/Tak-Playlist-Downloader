@@ -18,7 +18,7 @@ try {
 # Install/upgrade required packages
 Write-Host "`nInstalling/upgrading required packages..." -ForegroundColor Yellow
 
-$packages = @("schedule", "pystray", "pillow", "pyinstaller", "ttkthemes")
+$packages = @("schedule", "pystray", "pillow", "pyinstaller", "ttkthemes", "requests")
 $failed = $false
 
 foreach ($pkg in $packages) {
@@ -32,7 +32,7 @@ foreach ($pkg in $packages) {
 
 if ($failed) {
     Write-Host "`nFailed to install some packages!" -ForegroundColor Red
-    Write-Host "Try running: pip install schedule pystray pillow pyinstaller ttkthemes" -ForegroundColor Yellow
+    Write-Host "Try running: pip install schedule pystray pillow pyinstaller ttkthemes requests" -ForegroundColor Yellow
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -65,8 +65,14 @@ Write-Host "`nBuilding executable (this may take a few minutes)..." -ForegroundC
     --hidden-import=queue `
     --hidden-import=atexit `
     --hidden-import=getpass `
+    --hidden-import=requests `
+    --hidden-import=urllib3 `
+    --hidden-import=charset_normalizer `
+    --hidden-import=idna `
+    --hidden-import=certifi `
     --collect-all schedule `
     --collect-all pystray `
+    --collect-all requests `
     "Tak-Playlist-Downloader.py"
 
 if ($LASTEXITCODE -ne 0) {

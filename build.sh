@@ -59,6 +59,7 @@ pip install pystray
 pip install pillow
 pip install pyinstaller
 pip install ttkthemes
+pip install requests
 
 echo ""
 echo "Building executable..."
@@ -86,8 +87,14 @@ pyinstaller --onefile --windowed \
     --hidden-import=queue \
     --hidden-import=atexit \
     --hidden-import=getpass \
+    --hidden-import=requests \
+    --hidden-import=urllib3 \
+    --hidden-import=charset_normalizer \
+    --hidden-import=idna \
+    --hidden-import=certifi \
     --collect-all schedule \
     --collect-all pystray \
+    --collect-all requests \
     Tak-Playlist-Downloader.py
 
 if [ $? -ne 0 ]; then
@@ -97,9 +104,9 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo -e "${GREEN}========================================"
-echo "BUILD SUCCESSFUL!"
-echo "========================================${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}BUILD SUCCESSFUL!${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Executable: dist/Tak-Playlist-Downloader"
 echo "Size: $(du -h dist/Tak-Playlist-Downloader | cut -f1)"
