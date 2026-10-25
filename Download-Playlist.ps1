@@ -1,4 +1,4 @@
-# ========== ARGUMENT PARSING (MUST BE FIRST) ==========
+# ========== ARGUMENT PARSING ==========
 param(
 	[string]$p,
 	[string]$o,
@@ -11,30 +11,19 @@ param(
 )
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$Browser = "firefox"  # Default
+$Browser = "firefox"
 
-# ========== CHECK AND INSTALL WINGET (Windows 10/11) ==========
+# ========== CHECK AND INSTALL WINGET ==========
 function Install-Winget {
     Write-Host "[!] Checking if winget is available..." -ForegroundColor Yellow
-    
-    # Check if winget is already available
     $wingetPath = Get-Command winget -ErrorAction SilentlyContinue
     if ($wingetPath) {
         Write-Host "[OK] winget found" -ForegroundColor Green
         return $true
     }
-    
-    # winget is part of App Installer on Windows 10/11
     Write-Host "[!] winget not found. Attempting to install App Installer..." -ForegroundColor Yellow
-    
-    # Check Windows version
-    $osInfo = Get-ComputerInfo -ErrorAction SilentlyContinue
     $buildNumber = [Environment]::OSVersion.Version.Build
-    
     if ($buildNumber -ge 18362) {
-        Write-Host "[!] Windows 10/11 detected. Installing App Installer from Microsoft Store..." -ForegroundColor Yellow
-        
-        # Try to install App Installer via Microsoft Store link
         $wingetUrl = "https://aka.ms/getwinget"
         try {
             Start-Process $wingetUrl -Wait -NoNewWindow
@@ -53,24 +42,15 @@ function Install-Winget {
     return $false
 }
 
-# ========== YT-DLP INSTALLATION WITH WINGET ==========
+# ========== YT-DLP INSTALLATION ==========
 if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
     Write-Host "[!] yt-dlp.exe not found. Attempting to install with winget..." -ForegroundColor Yellow
-    
-    # Ensure winget is available
     if (Install-Winget) {
         Write-Host "[!] Installing yt-dlp via winget..." -ForegroundColor Yellow
-        
-        # Try to install yt-dlp using winget
         $installResult = & winget install yt-dlp.yt-dlp --silent --accept-package-agreements --accept-source-agreements 2>&1
-        
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[OK] yt-dlp installed successfully via winget" -ForegroundColor Green
-            
-            # Find where winget installed yt-dlp
-            $wingetPath = & winget list yt-dlp.yt-dlp --source winget | Select-String "yt-dlp"
             $ytDlpPath = & where.exe yt-dlp 2>$null | Select-Object -First 1
-            
             if ($ytDlpPath) {
                 Copy-Item $ytDlpPath -Destination (Join-Path $ScriptDir 'yt-dlp.exe') -Force
                 Write-Host "[OK] yt-dlp.exe copied to script directory" -ForegroundColor Green
@@ -79,14 +59,12 @@ if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
             Write-Host "[WARN] winget installation failed. Falling back to direct download..." -ForegroundColor Yellow
         }
     }
-    
-    # Fallback: Direct download if winget failed
     if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
-        Write-Host "[!] Downloading standalone yt-dlp.exe (with built-in JS runtime)..." -ForegroundColor Yellow
+        Write-Host "[!] Downloading standalone yt-dlp.exe..." -ForegroundColor Yellow
         $ytDlpUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
         try {
             Invoke-WebRequest -Uri $ytDlpUrl -OutFile (Join-Path $ScriptDir 'yt-dlp.exe') -UseBasicParsing
-            Write-Host "[OK] yt-dlp.exe downloaded successfully (standalone version with JS runtime)" -ForegroundColor Green
+            Write-Host "[OK] yt-dlp.exe downloaded successfully" -ForegroundColor Green
         } catch {
             Write-Host "ERROR: Failed to download yt-dlp.exe" -ForegroundColor Red
             exit 1
@@ -95,47 +73,32 @@ if (-not (Test-Path (Join-Path $ScriptDir 'yt-dlp.exe'))) {
 }
 $YtDlpExe = Join-Path $ScriptDir 'yt-dlp.exe'
 
-# ========== FFMPEG INSTALLATION WITH WINGET ==========
+# ========== FFMPEG INSTALLATION ==========
 $FfmpegExe = Join-Path $ScriptDir 'ffmpeg.exe'
 if (-not (Test-Path $FfmpegExe)) {
     Write-Host "[!] ffmpeg.exe not found. Attempting to install with winget..." -ForegroundColor Yellow
-    
     if (Install-Winget) {
-        Write-Host "[!] Installing ffmpeg via winget..." -ForegroundColor Yellow
-        
         $installResult = & winget install ffmpeg --silent --accept-package-agreements --accept-source-agreements 2>&1
-        
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[OK] ffmpeg installed successfully via winget" -ForegroundColor Green
-            
-            # Find where winget installed ffmpeg
             $ffmpegPath = & where.exe ffmpeg 2>$null | Select-Object -First 1
             if ($ffmpegPath) {
                 Copy-Item $ffmpegPath -Destination $FfmpegExe -Force
                 Write-Host "[OK] ffmpeg.exe copied to script directory" -ForegroundColor Green
             }
-        } else {
-            Write-Host "[WARN] winget installation failed. Falling back to manual download..." -ForegroundColor Yellow
         }
     }
-    
-    # Fallback: Direct download if winget failed
     if (-not (Test-Path $FfmpegExe)) {
-        Write-Host "[!] ffmpeg.exe not found. Downloading latest static Windows build..." -ForegroundColor Yellow
+        Write-Host "[!] Downloading latest static Windows build..." -ForegroundColor Yellow
         $ffmpegZipUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
         $ffmpegZip = Join-Path $ScriptDir 'ffmpeg-release-essentials.zip'
         try {
             Invoke-WebRequest -Uri $ffmpegZipUrl -OutFile $ffmpegZip -UseBasicParsing
-            Write-Host "[OK] ffmpeg zip downloaded. Extracting..." -ForegroundColor Green
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [System.IO.Compression.ZipFile]::ExtractToDirectory($ffmpegZip, $ScriptDir)
             $ffmpegFound = Get-ChildItem -Path $ScriptDir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
             if ($ffmpegFound) {
                 Move-Item -Force $ffmpegFound.FullName $FfmpegExe
-                Write-Host "[OK] ffmpeg.exe extracted and moved." -ForegroundColor Green
-            } else {
-                Write-Host "ERROR: ffmpeg.exe not found after extraction." -ForegroundColor Red
-                exit 1
             }
             Remove-Item $ffmpegZip -Force
             Get-ChildItem -Path $ScriptDir -Directory | Where-Object { $_.Name -like 'ffmpeg-*' } | Remove-Item -Recurse -Force
@@ -150,44 +113,6 @@ if (-not (Test-Path $FfmpegExe)) {
     exit 1
 }
 
-# ========== DENO INSTALLATION (Fallback - direct download) ==========
-function Install-Deno {
-    Write-Host "[!] Deno not found. Installing Deno (JavaScript runtime for yt-dlp)..." -ForegroundColor Yellow
-    
-    $denoUrl = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
-    $denoZip = Join-Path $ScriptDir 'deno.zip'
-    $denoExe = Join-Path $ScriptDir 'deno.exe'
-    
-    try {
-        Invoke-WebRequest -Uri $denoUrl -OutFile $denoZip -UseBasicParsing
-        Write-Host "[OK] Deno zip downloaded. Extracting..." -ForegroundColor Green
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($denoZip, $ScriptDir)
-        Remove-Item $denoZip -Force
-        Write-Host "[OK] Deno installed to: $denoExe" -ForegroundColor Green
-        
-        # Add deno to PATH for this session
-        $env:Path = "$ScriptDir;$env:Path"
-        
-        # Verify installation
-        & $denoExe --version
-        Write-Host "[OK] Deno is ready" -ForegroundColor Green
-    } catch {
-        Write-Host "[WARN] Deno installation failed. yt-dlp may still work but archive recovery might have issues." -ForegroundColor Yellow
-    }
-}
-
-# Check if Deno is available (for archive recovery)
-$denoExe = Join-Path $ScriptDir 'deno.exe'
-if (-not (Test-Path $denoExe)) {
-    $systemDeno = Get-Command deno -ErrorAction SilentlyContinue
-    if (-not $systemDeno) {
-        Install-Deno
-    } else {
-        Write-Host "[OK] Deno found in system PATH" -ForegroundColor Green
-    }
-}
-
 # ========== DEFAULT CONFIGURATION ==========
 $OutputDir = Get-Location
 $SleepInterval = 11
@@ -197,7 +122,6 @@ $PlaylistUrl = $null
 $EnableArchive = $false
 $TakDataDir = ".TakData"
 
-# ========== COLOR FUNCTIONS ========== 
 function Write-Red { Write-Host $args -ForegroundColor Red }
 function Write-Green { Write-Host $args -ForegroundColor Green }
 function Write-Yellow { Write-Host $args -ForegroundColor Yellow }
@@ -221,10 +145,8 @@ function Show-Help {
 	Write-Host "  -h             Show this help"
 	Write-Host ""
 	Write-Host "Note: Settings and logs are stored in '${TakDataDir}' subfolder"
-	Write-Host "Note: yt-dlp and ffmpeg are installed automatically via winget if available"
 }
 
-# ========== FUNCTION TO GET TAKDATA PATH ==========
 function Get-TakDataPath {
 	param([string]$outputDir)
 	$takDataPath = Join-Path $outputDir $TakDataDir
@@ -234,7 +156,6 @@ function Get-TakDataPath {
 	return $takDataPath
 }
 
-# ========== PARSE COMMAND LINE ARGUMENTS ==========
 $HAS_P = $PSBoundParameters.ContainsKey('p')
 $HAS_O = $PSBoundParameters.ContainsKey('o')
 $HAS_T = $PSBoundParameters.ContainsKey('t')
@@ -254,21 +175,13 @@ if ($HAS_Q) { $Quality = $q }
 if ($HAS_B) { $Browser = $b }
 if ($HAS_A) { $EnableArchive = $a }
 
-# Normalize path
 $OutputDir = $OutputDir -replace '/', '\'
 
-# ========== IF -p WAS PROVIDED, USE IT AND SAVE CONFIG ==========
 if ($HAS_P) {
 	Write-Green "[INFO] Using provided playlist URL"
-	
-	# Create output directory if needed
 	if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
-	
-	# Get TakData directory path
 	$TakDataPath = Get-TakDataPath -outputDir $OutputDir
 	$ConfigFile = Join-Path $TakDataPath "download_config.json"
-	
-	# Save configuration
 	$config = @{
 		PlaylistUrl = $PlaylistUrl
 		OutputDir = $OutputDir
@@ -283,26 +196,18 @@ if ($HAS_P) {
 	Write-Blue "Configuration saved to: $ConfigFile"
 }
 else {
-	# Try to load saved configuration
 	$TakDataPath = Get-TakDataPath -outputDir $OutputDir
 	$ConfigFile = Join-Path $TakDataPath "download_config.json"
-	
 	if (Test-Path $ConfigFile) {
 		$savedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 		Write-Green "[INFO] Found saved configuration from: $($savedConfig.LastUpdated)"
-		
 		$PlaylistUrl = $savedConfig.PlaylistUrl
 		if (-not $HAS_O) { $OutputDir = $savedConfig.OutputDir }
 		if (-not $HAS_T) { $SleepInterval = $savedConfig.SleepInterval }
 		if (-not $HAS_F) { $Format = $savedConfig.Format }
 		if (-not $HAS_Q) { $Quality = $savedConfig.Quality }
-		if (-not $HAS_B) { 
-			if ($savedConfig.PSObject.Properties.Name -contains 'Browser') {
-				$Browser = $savedConfig.Browser 
-			}
-		}
+		if (-not $HAS_B) { $Browser = $savedConfig.Browser }
 		if (-not $HAS_A) { $EnableArchive = $savedConfig.EnableArchive }
-		
 		Write-Green "[INFO] Using saved settings:"
 		Write-Host "  Playlist URL: $PlaylistUrl"
 		Write-Host "  Format: $Format"
@@ -318,7 +223,6 @@ else {
 	}
 }
 
-# Validate required values
 if (-not $PlaylistUrl) {
 	Write-Red "ERROR: Playlist URL is required"
 	Show-Help
@@ -335,16 +239,12 @@ if ($SleepInterval -lt 0 -or ($SleepInterval -isnot [int])) {
 	exit 1
 }
 
-# Clean URL (remove tracking parameters)
 $PlaylistUrl = $PlaylistUrl -replace '&si=[^&]*', '' -replace '\?si=[^&]*', ''
 
-# ========== CREATE OUTPUT DIRECTORY ==========
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
 
-# ========== CHANGE TO OUTPUT DIRECTORY ==========
 Push-Location $OutputDir
 
-# ========== CREATE TAKDATA DIRECTORY AND SET LOG FILES ==========
 $TakDataPath = Get-TakDataPath -outputDir $OutputDir
 $DownloadedLog = Join-Path $TakDataPath "downloaded_ids.txt"
 $FailedLog = Join-Path $TakDataPath "failed_ids.txt"
@@ -361,7 +261,6 @@ if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveD
 Write-Blue "TakData directory: $TakDataPath"
 Write-Blue "Log files stored in TakData subfolder"
 
-# ========== INTERNET CHECK ==========
 function Test-Internet {
 	try {
 		$null = Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet -ErrorAction Stop
@@ -390,21 +289,15 @@ function Wait-ForInternet {
 	Start-Sleep -Seconds 5
 }
 
-# ========== HELPER FUNCTIONS ==========
 function Remove-FromFailedLog {
 	param([string]$video_id)
-	
 	if (-not (Test-Path $FailedLog)) { return }
-	
 	$content = Get-Content $FailedLog -ErrorAction SilentlyContinue
 	if (-not $content) { return }
-	
 	$newContent = $content | Where-Object { $_ -ne $video_id }
-	
 	if ($newContent -is [array]) {
 		$newContent = $newContent | Where-Object { $_ -ne "" }
 	}
-	
 	if ($newContent -and $newContent.Count -gt 0) {
 		$newContent | Set-Content $FailedLog -Force
 	} else {
@@ -412,7 +305,6 @@ function Remove-FromFailedLog {
 	}
 }
 
-# ========== FORMAT & QUALITY ==========
 $AudioFormats = 'mp3','m4a','aac','flac','wav','opus'
 $VideoFormats = 'mp4','webm','mkv','avi','mov'
 $FormatLower = $Format.ToLower()
@@ -450,218 +342,76 @@ switch ($FormatLower) {
 	}
 }
 
-# ============================================================================
-# ========== ARCHIVE SEARCH FUNCTIONS (FIXED) ================================
-# ============================================================================
-# These functions now try multiple URL variants and use the correct APIs:
-#   - Wayback: CDX API with matchType=prefix across all YouTube URL forms
-#   - Archive.org: Advanced Search API to find items by video ID
-#   - GhostArchive: Direct download attempt (no pre-check that can fail on Cloudflare)
-# ============================================================================
-
-function Search-Wayback {
-	param(
-		[string]$video_id,
-		[string]$outputFile
-	)
-	
-	Write-Blue "     -> Checking Wayback Machine..."
-	
-	# Try multiple URL variants since Wayback captures videos under many formats
-	$urlVariants = @(
-		"youtube.com/watch?v=$video_id",
-		"www.youtube.com/watch?v=$video_id",
-		"youtu.be/$video_id",
-		"m.youtube.com/watch?v=$video_id",
-		"youtube.com/embed/$video_id",
-		"www.youtube.com/embed/$video_id"
-	)
-	
-	$foundTimestamp = $null
-	$foundOriginal = $null
-	$matchedVariant = $null
-	
-	foreach ($variant in $urlVariants) {
-		try {
-			# Use matchType=prefix to catch extra query params
-			$cdxUrl = "https://web.archive.org/cdx/search/cdx?url=$variant&matchType=prefix&output=json&limit=5&fl=timestamp,original,statuscode&filter=statuscode:200"
-			
-			$response = Invoke-WebRequest -Uri $cdxUrl -UseBasicParsing -TimeoutSec 20 -ErrorAction SilentlyContinue
-			if (-not $response -or -not $response.Content) { continue }
-			
-			$content = $response.Content.Trim()
-			if ($content -eq '[]' -or $content -eq '' -or $content -eq 'null') { continue }
-			
-			$data = $content | ConvertFrom-Json
-			if ($data.Count -gt 1) {
-				# First row is headers, second row is first snapshot
-				# Format: [["timestamp","original","statuscode"],["20230101...","http://...","200"],...]
-				$firstSnap = $data[1]
-				$foundTimestamp = $firstSnap[0]
-				$foundOriginal = $firstSnap[1]
-				$matchedVariant = $variant
-				break
-			}
-		} catch {
-			continue
-		}
-	}
-	
-	if (-not $foundTimestamp -or -not $foundOriginal) {
-		Write-Red "     [X] Not found on Wayback Machine"
-		return $false
-	}
-	
-	# Build the Wayback URL using the ACTUAL archived original URL
-	$waybackUrl = "https://web.archive.org/web/${foundTimestamp}if_/$foundOriginal"
-	
-	Write-Green "     [OK] Found on Wayback (capture $foundTimestamp)"
-	Write-Blue "       Matched variant: $matchedVariant"
-	Write-Blue "       URL: $waybackUrl"
-	
-	# Try to download
-	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --output $outputFile $waybackUrl 2>$null
-	if ($LASTEXITCODE -eq 0) {
-		Write-Green "     Download successful from Wayback Machine"
-		return $true
-	}
-	
-	return $false
-}
-
-function Search-GhostArchive {
-	param(
-		[string]$video_id,
-		[string]$outputFile
-	)
-	
-	Write-Blue "     -> Checking GhostArchive..."
-	
-	$ghostUrl = "https://ghostarchive.org/varchive/youtube/$video_id"
-	
-	# Skip the pre-check and just try the download.
-	# GhostArchive returns 200 for real videos and 404/redirect for missing ones.
-	# The old HEAD check returned 403 from Cloudflare even when the video was downloadable.
-	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 --output $outputFile $ghostUrl 2>$null
-	
-	if ($LASTEXITCODE -eq 0) {
-		Write-Green "     [OK] Downloaded from GhostArchive"
-		return $true
-	}
-	
-	Write-Red "     [X] Not found on GhostArchive"
-	return $false
-}
-
-function Search-ArchiveOrg {
-	param(
-		[string]$video_id,
-		[string]$outputFile
-	)
-	
-	Write-Blue "     -> Checking Archive.org..."
-	
-	# First try the common identifier format (fast path)
-	$directUrl = "https://archive.org/details/youtube-$video_id"
-	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 -f "bestvideo+bestaudio/best" --output $outputFile $directUrl 2>$null
-	
-	if ($LASTEXITCODE -eq 0) {
-		Write-Green "     [OK] Downloaded from Archive.org (direct)"
-		return $true
-	}
-	
-	# Fallback: search Archive.org for items mentioning the video ID
-	try {
-		$searchUrl = "https://archive.org/advancedsearch.php?q=youtube+${video_id}&fl[]=identifier&rows=5&output=json"
-		$searchResponse = Invoke-WebRequest -Uri $searchUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction SilentlyContinue
-		
-		if ($searchResponse -and $searchResponse.Content) {
-			$searchData = $searchResponse.Content | ConvertFrom-Json
-			$docs = $searchData.response.docs
-			
-			if ($docs -and $docs.Count -gt 0) {
-				$identifier = $docs[0].identifier
-				
-				if ($identifier) {
-					$itemUrl = "https://archive.org/details/$identifier"
-					Write-Blue "       Found Archive.org item: $identifier"
-					
-					& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 20 -f "bestvideo+bestaudio/best" --output $outputFile $itemUrl 2>$null
-					
-					if ($LASTEXITCODE -eq 0) {
-						Write-Green "     [OK] Downloaded from Archive.org (search)"
-						return $true
-					}
-				}
-			}
-		}
-	} catch {
-		# Ignore search errors and fall through
-	}
-	
-	Write-Red "     [X] Not found on Archive.org"
-	return $false
-}
-
-function Search-Hobune {
-	param(
-		[string]$video_id,
-		[string]$outputFile
-	)
-	
-	Write-Blue "     -> Checking Hobune.stream..."
-	
-	$hobuneUrl = "https://hobune.stream/yt/${video_id}.mp4"
-	
-	# Try direct download
-	& $YtDlpExe --no-warnings --no-playlist --no-check-certificate --socket-timeout 15 --output $outputFile $hobuneUrl 2>$null
-	
-	if ($LASTEXITCODE -eq 0) {
-		Write-Green "     [OK] Downloaded from Hobune.stream"
-		return $true
-	}
-	
-	Write-Red "     [X] Not found on Hobune.stream"
-	return $false
-}
-
-# Master archive search function - tries all sources in order
+# ========== ARCHIVE SEARCH VIA AGGREGATOR API ==========
 function Search-Archive {
 	param([string]$video_id)
 	
-	Write-Blue "  -> Searching archives for $video_id..."
+	$apiUrl = "https://findyoutubevideo.thetechrobo.ca/api/v5/$video_id"
+	Write-Blue "  -> Querying archive aggregator for $video_id..."
 	
-	if (-not (Test-Path $ArchiveDir)) { New-Item -ItemType Directory -Path $ArchiveDir | Out-Null }
+	try {
+		$response = Invoke-RestMethod -Uri $apiUrl -TimeoutSec 30 -ErrorAction SilentlyContinue
+	} catch {
+		Write-Red "     ✗ Failed to query aggregator API"
+		return $false
+	}
 	
+	if ($null -eq $response) {
+		Write-Red "     ✗ No response from aggregator API"
+		return $false
+	}
+	
+	# Check for invalid ID status
+	if ($response.status -eq "bad.id") {
+		Write-Red "     ✗ Invalid video ID"
+		return $false
+	}
+	
+	# Check the verdict for a full video
+	$videoFound = $false
+	if ($response.verdict -and $response.verdict.video -eq $true) {
+		$videoFound = $true
+	}
+	
+	if (-not $videoFound) {
+		Write-Yellow "     ✗ No full video found in any archive"
+		return $false
+	}
+	
+	Write-Green "     ✓ Video found in archives!"
+	
+	# Extract the first available download URL
+	$downloadUrl = $null
+	if ($response.keys) {
+		foreach ($key in $response.keys) {
+			if ($key.archived -eq $true -and $key.available) {
+				foreach ($avail in $key.available) {
+					if ($avail.url) {
+						$downloadUrl = $avail.url
+						break
+					}
+				}
+			}
+			if ($downloadUrl) { break }
+		}
+	}
+	
+	if (-not $downloadUrl) {
+		Write-Red "     ✗ Found verdict but no direct download URL"
+		return $false
+	}
+	
+	Write-Blue "     → Downloading from archive..."
 	$outputFile = Join-Path $ArchiveDir "%(uploader)s - %(title)s.%(ext)s"
-	
-	# Try 1: GhostArchive
-	if (Search-GhostArchive -video_id $video_id -outputFile $outputFile) {
+	& $YtDlpExe --no-warnings --no-playlist --output $outputFile $downloadUrl 2>$null
+	if ($LASTEXITCODE -eq 0) {
+		Write-Green "     Download successful from archive"
 		return $true
 	}
 	
-	# Try 2: Archive.org
-	if (Search-ArchiveOrg -video_id $video_id -outputFile $outputFile) {
-		return $true
-	}
-	
-	# Try 3: Wayback Machine (FIXED - multi-variant CDX query)
-	if (Search-Wayback -video_id $video_id -outputFile $outputFile) {
-		return $true
-	}
-	
-	# Try 4: Hobune.stream
-	if (Search-Hobune -video_id $video_id -outputFile $outputFile) {
-		return $true
-	}
-	
-	Write-Red "     Not found in any archive"
+	Write-Red "     ✗ Download from archive failed"
 	return $false
 }
-
-# ============================================================================
-# ========== EXTRACT VIDEO IDS ================================================
-# ============================================================================
 
 Write-Green "========================================="
 Write-Green "Tak Playlist Downloader"
@@ -724,7 +474,6 @@ if ($EnableArchive) {
 }
 Write-Host ""
 
-# ========== DOWNLOAD LOOP ==========
 $Processed = 0
 $YoutubeSuccess = 0
 $ArchiveRecovered = 0
@@ -761,92 +510,33 @@ foreach ($video_id in $VideoIds) {
 	Write-Yellow "[$($Processed)/$Total] DOWNLOADING: $video_id"
 	if (-not (Test-Internet)) { Wait-ForInternet }
 	
-	# ---- Robust download with multiple fallback methods ----
-	$downloadSuccess = $false
-	
-	# Method 1: Standard with cookies (if browser specified)
+	$args = @()
 	if ($Browser -ne "none") {
-		$args = @()
 		$args += '--cookies-from-browser'; $args += $Browser
-		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
-		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
-		$args += '--embed-thumbnail'
-		$args += '--add-metadata'
-		$args += '--output'; $args += $OutputTemplate
-		$args += '--no-overwrites'
-		$args += '--continue'
-		$args += '--no-check-certificate'
-		$args += "https://youtube.com/watch?v=$video_id"
-		
-		try {
-			& $YtDlpExe @args 2>&1 | Out-Null
-			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
-		} catch { }
+	}
+	$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
+	foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
+	$args += '--embed-thumbnail'
+	$args += '--add-metadata'
+	$args += '--output'; $args += $OutputTemplate
+	$args += '--no-overwrites'
+	$args += '--continue'
+	$args += "https://youtube.com/watch?v=$video_id"
+	
+	try {
+		& $YtDlpExe @args 2>&1 | Out-Null
+		$exitCode = $LASTEXITCODE
+	} catch {
+		$exitCode = 1
 	}
 	
-	# Method 2: Without cookies but with user agent
-	if (-not $downloadSuccess) {
-		$args = @()
-		$args += '--user-agent'; $args += 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
-		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
-		$args += '--embed-thumbnail'
-		$args += '--add-metadata'
-		$args += '--output'; $args += $OutputTemplate
-		$args += '--no-overwrites'
-		$args += '--continue'
-		$args += "https://youtube.com/watch?v=$video_id"
-		
-		try {
-			& $YtDlpExe @args 2>&1 | Out-Null
-			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
-		} catch { }
-	}
-	
-	# Method 3: Geo-bypass
-	if (-not $downloadSuccess) {
-		$args = @()
-		$args += '--geo-bypass'
-		$args += '--extractor-args'; $args += 'youtubetab:skip=authcheck'
-		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
-		$args += '--embed-thumbnail'
-		$args += '--add-metadata'
-		$args += '--output'; $args += $OutputTemplate
-		$args += '--no-overwrites'
-		$args += '--continue'
-		$args += "https://youtube.com/watch?v=$video_id"
-		
-		try {
-			& $YtDlpExe @args 2>&1 | Out-Null
-			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
-		} catch { }
-	}
-	
-	# Method 4: Android client (bypasses some restrictions)
-	if (-not $downloadSuccess) {
-		$args = @()
-		$args += '--extractor-args'; $args += 'youtube:player_client=android'
-		foreach ($part in $YtdlpArgs -split ' ') { if ($part) { $args += $part } }
-		$args += '--embed-thumbnail'
-		$args += '--add-metadata'
-		$args += '--output'; $args += $OutputTemplate
-		$args += '--no-overwrites'
-		$args += '--continue'
-		$args += "https://youtube.com/watch?v=$video_id"
-		
-		try {
-			& $YtDlpExe @args 2>&1 | Out-Null
-			if ($LASTEXITCODE -eq 0) { $downloadSuccess = $true }
-		} catch { }
-	}
-	
-	if ($downloadSuccess) {
+	if ($exitCode -eq 0) {
 		Write-Green "  [OK] Success - added to log"
 		Add-Content $DownloadedLog $video_id
 		Remove-FromFailedLog -video_id $video_id
 		$YoutubeSuccess++
 	} else {
-		Write-Red "  [X] YouTube failed after all attempts"
+		Write-Red "  [X] YouTube failed"
 		
 		if ($EnableArchive) {
 			Write-Blue "  -> Attempting archive recovery..."
@@ -875,7 +565,6 @@ foreach ($video_id in $VideoIds) {
 	}
 }
 
-# ========== PROCESS RECOVERED FILES ==========
 if ($EnableArchive -and (Test-Path $ArchiveDir)) {
 	$recoveredFiles = Get-ChildItem -Path $ArchiveDir -File
 	if ($recoveredFiles.Count -gt 0) {
@@ -885,7 +574,6 @@ if ($EnableArchive -and (Test-Path $ArchiveDir)) {
 			$filename = $file.Name
 			$extension = $file.Extension.TrimStart('.').ToLower()
 			$nameWithoutExt = $file.BaseName
-			
 			if ($extension -eq $FormatLower) {
 				Move-Item -Path $file.FullName -Destination $OutputDir -Force
 				Write-Green "  Moved: $filename"
@@ -902,7 +590,6 @@ if ($EnableArchive -and (Test-Path $ArchiveDir)) {
 	}
 }
 
-# ========== SUMMARY ==========
 Write-Host ""
 Write-Green "========================================="
 Write-Green "COMPLETE!"
@@ -933,5 +620,4 @@ if ($EnableArchive) {
 	Write-Host "Run Retry-Failed.ps1 later to retry them"
 }
 
-# ========== RESTORE ORIGINAL LOCATION ==========
 Pop-Location

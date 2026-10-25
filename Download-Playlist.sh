@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ========== DEFAULT CONFIGURATION ==========
-OUTPUT_DIR="$(pwd)"  # Default to current directory
-SLEEP_INTERVAL=11     # Default 11 seconds
-ENABLE_ARCHIVE=false  # Default false (disabled)
-PLAYLIST_URL=""       # Required argument
-FORMAT="mp3"          # Default format
-QUALITY="mid"         # Default quality (low/mid/high)
-BROWSER="firefox"     # Default browser
+OUTPUT_DIR="$(pwd)"
+SLEEP_INTERVAL=11
+ENABLE_ARCHIVE=false
+PLAYLIST_URL=""
+FORMAT="mp3"
+QUALITY="mid"
+BROWSER="firefox"
 TAK_DATA_DIR=".TakData"
 # ===========================================
 
@@ -24,7 +24,6 @@ NC='\033[0m'
 check_and_install_packages() {
     local missing_packages=()
     
-    # Detect OS
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         OS=$ID
@@ -34,7 +33,6 @@ check_and_install_packages() {
     
     echo -e "${BLUE}Checking required packages...${NC}"
     
-    # Check for yt-dlp
     if ! command -v yt-dlp &> /dev/null; then
         echo -e "${YELLOW}yt-dlp not found. Will install...${NC}"
         missing_packages+=("yt-dlp")
@@ -42,7 +40,6 @@ check_and_install_packages() {
         echo -e "${GREEN}✓ yt-dlp found${NC}"
     fi
     
-    # Check for ffmpeg
     if ! command -v ffmpeg &> /dev/null; then
         echo -e "${YELLOW}ffmpeg not found. Will install...${NC}"
         missing_packages+=("ffmpeg")
@@ -50,7 +47,6 @@ check_and_install_packages() {
         echo -e "${GREEN}✓ ffmpeg found${NC}"
     fi
     
-    # Check for curl
     if ! command -v curl &> /dev/null; then
         echo -e "${YELLOW}curl not found. Will install...${NC}"
         missing_packages+=("curl")
@@ -58,7 +54,6 @@ check_and_install_packages() {
         echo -e "${GREEN}✓ curl found${NC}"
     fi
     
-    # Check for jq (required for JSON parsing)
     if ! command -v jq &> /dev/null; then
         echo -e "${YELLOW}jq not found. Will install...${NC}"
         missing_packages+=("jq")
@@ -66,15 +61,6 @@ check_and_install_packages() {
         echo -e "${GREEN}✓ jq found${NC}"
     fi
     
-    # Check for python3 (used for JSON parsing in archive search)
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${YELLOW}python3 not found. Will install...${NC}"
-        missing_packages+=("python3")
-    else
-        echo -e "${GREEN}✓ python3 found${NC}"
-    fi
-    
-    # Install missing packages if any
     if [ ${#missing_packages[@]} -gt 0 ]; then
         echo -e "${YELLOW}Installing missing packages: ${missing_packages[*]}${NC}"
         
@@ -103,7 +89,6 @@ check_and_install_packages() {
                 ;;
         esac
         
-        # Verify installations
         for pkg in "${missing_packages[@]}"; do
             if ! command -v "$pkg" &> /dev/null; then
                 echo -e "${RED}Failed to install $pkg. Please install manually.${NC}"
@@ -112,7 +97,6 @@ check_and_install_packages() {
         done
     fi
     
-    # Install yt-dlp via pip if package manager didn't have it (fallback)
     if [[ " ${missing_packages[*]} " =~ "yt-dlp" ]] && ! command -v yt-dlp &> /dev/null; then
         echo -e "${YELLOW}Installing yt-dlp via pip...${NC}"
         pip3 install yt-dlp --break-system-packages 2>/dev/null || pip3 install yt-dlp
@@ -129,14 +113,11 @@ check_and_install_deno() {
     if ! command -v deno &> /dev/null; then
         echo -e "${YELLOW}Deno not found. Installing Deno...${NC}"
         
-        # Download and install Deno
         curl -fsSL https://deno.land/install.sh | sh
         
-        # Add to PATH for this session
         export DENO_INSTALL="$HOME/.deno"
         export PATH="$DENO_INSTALL/bin:$PATH"
         
-        # Add to .bashrc for future sessions
         if [ -f "$HOME/.bashrc" ]; then
             echo 'export PATH="$HOME/.deno/bin:$PATH"' >> "$HOME/.bashrc"
         elif [ -f "$HOME/.zshrc" ]; then
@@ -156,10 +137,7 @@ check_and_install_deno() {
     echo ""
 }
 
-# Run package check
 check_and_install_packages
-
-# Run Deno check (required for archive recovery and JS challenges)
 check_and_install_deno
 
 # Function to get TakData directory path
@@ -170,12 +148,10 @@ get_takdata_path() {
     echo "$takdata_path"
 }
 
-# Clean playlist URL
 clean_playlist_url() {
     echo "$1" | sed 's/&si=[^&]*//g' | sed 's/?si=[^&]*//g'
 }
 
-# Internet connection check
 check_internet() {
     if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 || \
        ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || \
@@ -186,7 +162,6 @@ check_internet() {
     fi
 }
 
-# Wait for internet to return
 wait_for_internet() {
     local wait_time=30
     local max_wait=3600
@@ -209,7 +184,6 @@ wait_for_internet() {
     sleep 5
 }
 
-# Set quality parameters - ALWAYS convert to specified format
 set_quality_params() {
     local quality="$1"
     local format="$2"
@@ -219,45 +193,24 @@ set_quality_params() {
     
     if echo "$audio_formats" | grep -qw "$format_lower"; then
         case "$quality" in
-            low)
-                AUDIO_QUALITY="5"
-                ;;
-            mid)
-                AUDIO_QUALITY="2"
-                ;;
-            high)
-                AUDIO_QUALITY="0"
-                ;;
-            *)
-                AUDIO_QUALITY="2"
-                ;;
+            low) AUDIO_QUALITY="5" ;;
+            mid) AUDIO_QUALITY="2" ;;
+            high) AUDIO_QUALITY="0" ;;
+            *) AUDIO_QUALITY="2" ;;
         esac
         YTDLP_EXTRA_ARGS="-f bestaudio -x --audio-format ${format_lower} --audio-quality ${AUDIO_QUALITY}"
         echo -e "${BLUE}Audio quality: $quality (${format_lower})${NC}"
         
     elif echo "$video_formats" | grep -qw "$format_lower"; then
         case "$quality" in
-            low)
-                YTDLP_EXTRA_ARGS="-f worstvideo+worstaudio --merge-output-format ${format_lower}"
-                echo -e "${BLUE}Video quality: $quality (worst available)${NC}"
-                ;;
-            mid)
-                YTDLP_EXTRA_ARGS="-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format ${format_lower}"
-                echo -e "${BLUE}Video quality: $quality (up to 480p)${NC}"
-                ;;
-            high)
-                YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}"
-                echo -e "${BLUE}Video quality: $quality (best available)${NC}"
-                ;;
-            *)
-                YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}"
-                echo -e "${BLUE}Video quality: mid (up to 480p)${NC}"
-                ;;
+            low) YTDLP_EXTRA_ARGS="-f worstvideo+worstaudio --merge-output-format ${format_lower}" ;;
+            mid) YTDLP_EXTRA_ARGS="-f bestvideo[height<=480]+bestaudio/best[height<=480] --merge-output-format ${format_lower}" ;;
+            high) YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}" ;;
+            *) YTDLP_EXTRA_ARGS="-f bestvideo+bestaudio --merge-output-format ${format_lower}" ;;
         esac
     fi
 }
 
-# Help function
 show_help() {
     echo "Usage: $0 -p PLAYLIST_URL [-o OUTPUT_DIR] [-t SECONDS] [-f FORMAT] [-q QUALITY] [-b BROWSER] [-a] [-h]"
     echo ""
@@ -276,7 +229,6 @@ show_help() {
     echo "Note: Settings and logs are stored in '${TAK_DATA_DIR}' subfolder"
 }
 
-# Parse arguments
 while getopts "p:o:t:f:q:b:ah" opt; do
     case $opt in
         p) PLAYLIST_URL="$OPTARG" ;;
@@ -291,16 +243,7 @@ while getopts "p:o:t:f:q:b:ah" opt; do
     esac
 done
 
-# Save original command line arguments to track what was explicitly provided
-HAS_P=0
-HAS_O=0
-HAS_T=0
-HAS_F=0
-HAS_Q=0
-HAS_B=0
-HAS_A=0
-
-# Re-parse to track which arguments were explicitly provided
+HAS_P=0; HAS_O=0; HAS_T=0; HAS_F=0; HAS_Q=0; HAS_B=0; HAS_A=0
 for arg in "$@"; do
     case "$arg" in
         -p) HAS_P=1 ;;
@@ -313,9 +256,7 @@ for arg in "$@"; do
     esac
 done
 
-# ========== CHECK FOR SAVED CONFIGURATION IF NO -p PROVIDED ==========
 if [ $HAS_P -eq 0 ]; then
-    # Determine TakData path
     TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
     CONFIG_FILE="${TAK_DATA_PATH}/download_config.json"
     
@@ -325,7 +266,7 @@ if [ $HAS_P -eq 0 ]; then
         [ $HAS_T -eq 0 ] && SLEEP_INTERVAL=$(jq -r '.SleepInterval' "$CONFIG_FILE")
         [ $HAS_F -eq 0 ] && FORMAT=$(jq -r '.Format' "$CONFIG_FILE")
         [ $HAS_Q -eq 0 ] && QUALITY=$(jq -r '.Quality' "$CONFIG_FILE")
-        [ $HAS_B -eq 0 ] && BROWSER=$(jq -r '.Browser // "firefox"' "$CONFIG_FILE")
+        [ $HAS_B -eq 0 ] && BROWSER=$(jq -r '.Browser' "$CONFIG_FILE")
         [ $HAS_A -eq 0 ] && ENABLE_ARCHIVE=$(jq -r '.EnableArchive' "$CONFIG_FILE")
         LAST_UPDATED=$(jq -r '.LastUpdated' "$CONFIG_FILE")
         
@@ -349,24 +290,20 @@ if [ $HAS_P -eq 0 ]; then
     fi
 fi
 
-# Validate quality
 if [[ ! "$QUALITY" =~ ^(low|mid|high)$ ]]; then
     echo -e "${RED}ERROR: Quality must be low, mid, or high${NC}"
     exit 1
 fi
 
-# Clean URL if provided
 if [ -n "$PLAYLIST_URL" ]; then
     PLAYLIST_URL=$(clean_playlist_url "$PLAYLIST_URL")
 fi
 
-# Validate sleep interval
 if ! [[ "$SLEEP_INTERVAL" =~ ^[0-9]+$ ]]; then
     echo -e "${RED}ERROR: Sleep interval must be a number${NC}"
     exit 1
 fi
 
-# Set format parameters
 FORMAT_LOWER=$(echo "$FORMAT" | tr '[:upper:]' '[:lower:]')
 AUDIO_FORMATS="mp3 m4a aac flac wav opus"
 VIDEO_FORMATS="mp4 webm mkv avi mov"
@@ -384,13 +321,10 @@ else
     exit 1
 fi
 
-# Set quality parameters
 set_quality_params "$QUALITY" "$FORMAT"
 
-# ========== CREATE OUTPUT DIRECTORY ==========
 mkdir -p "$OUTPUT_DIR"
 
-# ========== SAVE CONFIGURATION (if -p was provided) ==========
 if [ $HAS_P -eq 1 ]; then
     TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
     mkdir -p "$TAK_DATA_PATH"
@@ -413,7 +347,6 @@ fi
 
 cd "$OUTPUT_DIR" || exit 1
 
-# ========== SET UP TAKDATA DIRECTORY AND LOG FILES ==========
 TAK_DATA_PATH="${OUTPUT_DIR}/${TAK_DATA_DIR}"
 mkdir -p "$TAK_DATA_PATH"
 
@@ -424,258 +357,85 @@ PERMANENTLY_FAILED_LOG="${TAK_DATA_PATH}/permanently_failed_ids.txt"
 ARCHIVE_DIR="${TAK_DATA_PATH}/archive_recovered"
 VIDEO_IDS_FILE="${TAK_DATA_PATH}/playlist_videos.txt"
 
-# Initialize files
 touch "$LOG_FILE" "$FAILED_LOG" "$RECOVERED_LOG" "$PERMANENTLY_FAILED_LOG"
 
 echo -e "${BLUE}TakData directory: $TAK_DATA_PATH${NC}"
 echo -e "${BLUE}Log files stored in TakData subfolder${NC}"
 
-# Simple mark functions
-mark_downloaded() { 
-    echo "$1" >> "$LOG_FILE"
-    sync
-}
+mark_downloaded() { echo "$1" >> "$LOG_FILE"; sync; }
+mark_recovered() { echo "$1" >> "$RECOVERED_LOG"; sync; }
+mark_failed() { echo "$1" >> "$FAILED_LOG"; sync; }
+mark_permanently_failed() { echo "$1" >> "$PERMANENTLY_FAILED_LOG"; sync; }
 
-mark_recovered() { 
-    echo "$1" >> "$RECOVERED_LOG"
-    sync
-}
-
-mark_failed() { 
-    echo "$1" >> "$FAILED_LOG"
-    sync
-}
-
-mark_permanently_failed() { 
-    echo "$1" >> "$PERMANENTLY_FAILED_LOG"
-    sync
-}
-
-# Clean exit
 cleanup() {
     echo -e "\n\n${YELLOW}Interrupted. Progress saved. Run again to resume.${NC}"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
 
-# ============================================================================
-# ========== ARCHIVE SEARCH FUNCTIONS (FIXED) ================================
-# ============================================================================
-# These functions now try multiple URL variants and use the correct APIs:
-#   - Wayback: CDX API with matchType=prefix across all YouTube URL forms
-#   - Archive.org: Advanced Search API to find items by video ID
-#   - GhostArchive: Direct download attempt (no pre-check that can fail on Cloudflare)
-# ============================================================================
-
-# Search Wayback Machine using CDX API across multiple URL variants
-search_wayback() {
+# ========== ARCHIVE SEARCH VIA AGGREGATOR API ==========
+search_archive() {
     local video_id="$1"
-    local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
+    local api_url="https://findyoutubevideo.thetechrobo.ca/api/v5/${video_id}"
     
-    echo -e "${BLUE}     → Checking Wayback Machine...${NC}"
+    echo -e "${BLUE}  → Querying archive aggregator for $video_id...${NC}"
     
-    # Try multiple URL variants since Wayback captures videos under many formats
-    local url_variants=(
-        "youtube.com/watch?v=${video_id}"
-        "www.youtube.com/watch?v=${video_id}"
-        "youtu.be/${video_id}"
-        "m.youtube.com/watch?v=${video_id}"
-        "youtube.com/embed/${video_id}"
-        "www.youtube.com/embed/${video_id}"
-    )
+    # Fetch the JSON response
+    local response
+    response=$(curl -sL --max-time 30 "$api_url" 2>/dev/null)
     
-    local found_original=""
-    local found_timestamp=""
-    
-    for variant in "${url_variants[@]}"; do
-        # Query CDX API with matchType=prefix to catch extra query params
-        local cdx_url="https://web.archive.org/cdx/search/cdx?url=${variant}&matchType=prefix&output=json&limit=5&fl=timestamp,original,statuscode&filter=statuscode:200"
-        
-        local cdx_response=$(curl -sL --max-time 20 "$cdx_url" 2>/dev/null)
-        
-        if [ -n "$cdx_response" ] && [ "$cdx_response" != "[]" ] && [ "$cdx_response" != "null" ]; then
-            # Parse JSON: skip header row, get first snapshot
-            # Format: [["timestamp","original","statuscode"],["20230101...","http://...","200"],...]
-            local parsed=$(echo "$cdx_response" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if len(data) > 1:
-        print(data[1][0] + '|' + data[1][1])
-except Exception:
-    pass
-" 2>/dev/null)
-            
-            if [ -n "$parsed" ]; then
-                found_timestamp=$(echo "$parsed" | cut -d'|' -f1)
-                found_original=$(echo "$parsed" | cut -d'|' -f2)
-                echo -e "${BLUE}       Matched variant: ${variant}${NC}"
-                break
-            fi
-        fi
-    done
-    
-    if [ -z "$found_timestamp" ] || [ -z "$found_original" ]; then
-        echo -e "${RED}     ✗ Not found on Wayback Machine${NC}"
+    if [ -z "$response" ]; then
+        echo -e "${RED}     ✗ No response from aggregator API${NC}"
         return 1
     fi
     
-    # Build the Wayback URL using the ACTUAL archived original URL
-    local wayback_url="https://web.archive.org/web/${found_timestamp}if_/${found_original}"
-    
-    echo -e "${GREEN}     ✓ Found on Wayback (capture ${found_timestamp})${NC}"
-    echo -e "${BLUE}       URL: ${wayback_url}${NC}"
-    
-    # Try to download
-    yt-dlp --no-warnings --no-playlist \
-           --no-check-certificate \
-           --output "$output_file" \
-           "$wayback_url" 2>/dev/null && return 0
-    
-    return 1
-}
-
-# Search GhostArchive (direct download attempt - HEAD check can fail on Cloudflare)
-search_ghostarchive() {
-    local video_id="$1"
-    local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
-    
-    echo -e "${BLUE}     → Checking GhostArchive...${NC}"
-    
-    local ghost_url="https://ghostarchive.org/varchive/youtube/$video_id"
-    
-    # Skip the pre-check and just try the download.
-    # GhostArchive returns 200 for real videos and 404/redirect for missing ones.
-    if yt-dlp --no-warnings --no-playlist \
-              --no-check-certificate \
-              --socket-timeout 20 \
-              --output "$output_file" \
-              "$ghost_url" 2>/dev/null; then
-        echo -e "${GREEN}     ✓ Downloaded from GhostArchive${NC}"
-        return 0
+    # Check if the API returned an error status
+    local status
+    status=$(echo "$response" | jq -r '.status // "ok"' 2>/dev/null)
+    if [ "$status" = "bad.id" ]; then
+        echo -e "${RED}     ✗ Invalid video ID${NC}"
+        return 1
     fi
     
-    echo -e "${RED}     ✗ Not found on GhostArchive${NC}"
-    return 1
-}
-
-# Search Archive.org using Advanced Search API (more reliable than guessing identifier)
-search_archive_org() {
-    local video_id="$1"
-    local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
+    # Check the verdict to see if a full video was found
+    local video_found
+    video_found=$(echo "$response" | jq -r '.verdict.video // false' 2>/dev/null)
     
-    echo -e "${BLUE}     → Checking Archive.org...${NC}"
-    
-    # First try the common identifier format (fast path)
-    local direct_url="https://archive.org/details/youtube-$video_id"
-    if yt-dlp --no-warnings --no-playlist \
-              --no-check-certificate \
-              --socket-timeout 20 \
-              -f "bestvideo+bestaudio/best" \
-              --output "$output_file" \
-              "$direct_url" 2>/dev/null; then
-        echo -e "${GREEN}     ✓ Downloaded from Archive.org (direct)${NC}"
-        return 0
+    if [ "$video_found" != "true" ]; then
+        echo -e "${YELLOW}     ✗ No full video found in any archive${NC}"
+        # Optionally, you could check for metadata here: .verdict.metaonly
+        return 1
     fi
     
-    # Fallback: search Archive.org for items mentioning the video ID
-    local search_url="https://archive.org/advancedsearch.php?q=youtube+${video_id}&fl[]=identifier&rows=5&output=json"
-    local search_response=$(curl -sL --max-time 15 "$search_url" 2>/dev/null)
+    echo -e "${GREEN}     ✓ Video found in archives!${NC}"
     
-    if [ -n "$search_response" ]; then
-        local identifier=$(echo "$search_response" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    docs = data.get('response', {}).get('docs', [])
-    for doc in docs:
-        ident = doc.get('identifier', '')
-        if ident:
-            print(ident)
-            break
-except Exception:
-    pass
-" 2>/dev/null)
-        
-        if [ -n "$identifier" ]; then
-            local item_url="https://archive.org/details/${identifier}"
-            echo -e "${BLUE}       Found Archive.org item: ${identifier}${NC}"
-            
-            if yt-dlp --no-warnings --no-playlist \
-                      --no-check-certificate \
-                      --socket-timeout 20 \
-                      -f "bestvideo+bestaudio/best" \
-                      --output "$output_file" \
-                      "$item_url" 2>/dev/null; then
-                echo -e "${GREEN}     ✓ Downloaded from Archive.org (search)${NC}"
-                return 0
-            fi
-        fi
+    # Extract the first available download URL from the keys array
+    # The structure is: keys[] -> select(archived == true) -> available[] -> url
+    local download_url
+    download_url=$(echo "$response" | jq -r '
+        .keys[]? 
+        | select(.archived == true) 
+        | .available[]? 
+        | .url 
+        | select(. != null)
+    ' 2>/dev/null | head -n 1)
+    
+    if [ -z "$download_url" ] || [ "$download_url" = "null" ]; then
+        echo -e "${RED}     ✗ Found verdict but no direct download URL${NC}"
+        return 1
     fi
     
-    echo -e "${RED}     ✗ Not found on Archive.org${NC}"
-    return 1
-}
-
-# Search Hobune.stream (direct MP4 file)
-search_hobune() {
-    local video_id="$1"
-    local output_file="$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s"
-    
-    echo -e "${BLUE}     → Checking Hobune.stream...${NC}"
-    
-    local hobune_url="https://hobune.stream/yt/${video_id}.mp4"
-    
-    # Try direct download
-    if yt-dlp --no-warnings --no-playlist \
-              --no-check-certificate \
-              --socket-timeout 15 \
-              --output "$output_file" \
-              "$hobune_url" 2>/dev/null; then
-        echo -e "${GREEN}     ✓ Downloaded from Hobune.stream${NC}"
-        return 0
-    fi
-    
-    echo -e "${RED}     ✗ Not found on Hobune.stream${NC}"
-    return 1
-}
-
-# Master archive search function - tries all sources in order
-search_archive() {
-    local video_id="$1"
-    
-    echo -e "${BLUE}  → Searching archives...${NC}"
-    
+    echo -e "${BLUE}     → Downloading from archive...${NC}"
     mkdir -p "$ARCHIVE_DIR"
+    yt-dlp --no-warnings --no-playlist \
+           --output "$ARCHIVE_DIR/%(uploader)s - %(title)s.%(ext)s" \
+           "$download_url" 2>/dev/null && return 0
     
-    # Try 1: GhostArchive
-    if search_ghostarchive "$video_id"; then
-        return 0
-    fi
-    
-    # Try 2: Archive.org
-    if search_archive_org "$video_id"; then
-        return 0
-    fi
-    
-    # Try 3: Wayback Machine (FIXED - multi-variant CDX query)
-    if search_wayback "$video_id"; then
-        return 0
-    fi
-    
-    # Try 4: Hobune.stream
-    if search_hobune "$video_id"; then
-        return 0
-    fi
-    
-    echo -e "${RED}     ✗ Not found in any archive${NC}"
+    echo -e "${RED}     ✗ Download from archive failed${NC}"
     return 1
 }
 
-# ============================================================================
-# ========== EXTRACT VIDEO IDs ================================================
-# ========== ==================================================================
-
+# ========== EXTRACT VIDEO IDs ==========
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}Tak Playlist Downloader${NC}"
 echo -e "${GREEN}=========================================${NC}"
@@ -688,14 +448,12 @@ echo "Delay: ${SLEEP_INTERVAL}s"
 echo "Archive recovery: $( [ "$ENABLE_ARCHIVE" = true ] && echo "ON" || echo "OFF" )"
 echo ""
 
-# Check internet
 if ! check_internet; then
     wait_for_internet
 fi
 
 echo -e "${BLUE}Fetching playlist...${NC}"
 
-# Extract video IDs
 > "$VIDEO_IDS_FILE"
 if [ "$BROWSER" != "none" ]; then
     yt-dlp --cookies-from-browser "$BROWSER" \
@@ -726,7 +484,6 @@ if [ ! -s "$VIDEO_IDS_FILE" ]; then
     exit 1
 fi
 
-# Calculate totals
 TOTAL=$(wc -l < "$VIDEO_IDS_FILE")
 
 if [ "$ENABLE_ARCHIVE" = true ]; then
@@ -757,7 +514,6 @@ else
 fi
 echo ""
 
-# Verify log file is writable
 if [ ! -w "$LOG_FILE" ]; then
     echo -e "${RED}ERROR: Log file not writable: $LOG_FILE${NC}"
     exit 1
@@ -774,32 +530,27 @@ SKIPPED_ALREADY=0
 while IFS= read -r video_id; do
     [ -z "$video_id" ] && continue
     
-    # Trim whitespace
     video_id=$(echo "$video_id" | tr -d '[:space:]')
     PROCESSED=$((PROCESSED + 1))
     
-    # Check if permanently failed (using -- to handle hyphens)
     if grep -Fxq -- "$video_id" "$PERMANENTLY_FAILED_LOG" 2>/dev/null; then
         echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (permanently failed)"
         SKIPPED_PERMANENT=$((SKIPPED_PERMANENT + 1))
         continue
     fi
     
-    # Check if already downloaded
     if grep -Fxq -- "$video_id" "$LOG_FILE" 2>/dev/null; then
         echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (already downloaded)"
         SKIPPED_ALREADY=$((SKIPPED_ALREADY + 1))
         continue
     fi
     
-    # Check if already recovered
     if grep -Fxq -- "$video_id" "$RECOVERED_LOG" 2>/dev/null; then
         echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (already recovered)"
         SKIPPED_ALREADY=$((SKIPPED_ALREADY + 1))
         continue
     fi
     
-    # If not using archive, skip videos in failed log
     if [ "$ENABLE_ARCHIVE" = false ]; then
         if grep -Fxq -- "$video_id" "$FAILED_LOG" 2>/dev/null; then
             echo "[$(printf "%4d" $PROCESSED)/$TOTAL] SKIP: $video_id (previously failed - will retry later)"
@@ -807,7 +558,6 @@ while IFS= read -r video_id; do
         fi
     fi
     
-    # If we get here, need to download
     echo ""
     echo -e "${YELLOW}[$(printf "%4d" $PROCESSED)/$TOTAL] DOWNLOADING: $video_id${NC}"
     
@@ -815,10 +565,6 @@ while IFS= read -r video_id; do
         wait_for_internet
     fi
     
-    # Download with yt-dlp with multiple fallback methods for robustness
-    download_success=0
-    
-    # Method 1: Standard with cookies (if browser specified)
     if [ "$BROWSER" != "none" ]; then
         yt-dlp --cookies-from-browser "$BROWSER" \
                --extractor-args youtubetab:skip=authcheck \
@@ -826,48 +572,22 @@ while IFS= read -r video_id; do
                --embed-thumbnail --add-metadata \
                --output "$OUTPUT_TEMPLATE" \
                --no-overwrites --continue \
-               --no-check-certificate \
-               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1 && download_success=1
-    fi
-    
-    # Method 2: Without cookies but with user agent
-    if [ $download_success -eq 0 ]; then
-        yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-               --extractor-args youtubetab:skip=authcheck \
+               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1
+    else
+        yt-dlp --extractor-args youtubetab:skip=authcheck \
                $YTDLP_EXTRA_ARGS \
                --embed-thumbnail --add-metadata \
                --output "$OUTPUT_TEMPLATE" \
                --no-overwrites --continue \
-               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1 && download_success=1
+               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1
     fi
     
-    # Method 3: Try with geo-bypass
-    if [ $download_success -eq 0 ]; then
-        yt-dlp --geo-bypass \
-               --extractor-args youtubetab:skip=authcheck \
-               $YTDLP_EXTRA_ARGS \
-               --embed-thumbnail --add-metadata \
-               --output "$OUTPUT_TEMPLATE" \
-               --no-overwrites --continue \
-               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1 && download_success=1
-    fi
-    
-    # Method 4: Try with android client (bypasses some restrictions)
-    if [ $download_success -eq 0 ]; then
-        yt-dlp --extractor-args "youtube:player_client=android" \
-               $YTDLP_EXTRA_ARGS \
-               --embed-thumbnail --add-metadata \
-               --output "$OUTPUT_TEMPLATE" \
-               --no-overwrites --continue \
-               "https://youtube.com/watch?v=$video_id" > /dev/null 2>&1 && download_success=1
-    fi
-    
-    if [ $download_success -eq 1 ]; then
+    if [ $? -eq 0 ]; then
         echo -e "${GREEN}  ✓ Success - added to log${NC}"
         mark_downloaded "$video_id"
         YOUTUBE_SUCCESS=$((YOUTUBE_SUCCESS + 1))
     else
-        echo -e "${RED}  ✗ YouTube failed after all attempts${NC}"
+        echo -e "${RED}  ✗ YouTube failed${NC}"
         
         if [ "$ENABLE_ARCHIVE" = true ]; then
             if search_archive "$video_id"; then
@@ -887,14 +607,12 @@ while IFS= read -r video_id; do
         fi
     fi
     
-    # Delay between downloads
     if [ $SLEEP_INTERVAL -gt 0 ] && [ $PROCESSED -lt $TOTAL ]; then
         echo -e "${BLUE}  Waiting ${SLEEP_INTERVAL}s...${NC}"
         sleep "$SLEEP_INTERVAL"
     fi
 done < "$VIDEO_IDS_FILE"
 
-# Ask to run Move-Recovered if archive was enabled
 if [ "$ENABLE_ARCHIVE" = true ] && [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCHIVE_DIR" 2>/dev/null)" ]; then
     echo ""
     echo -e "${MAGENTA}Archive recovered files found in: $ARCHIVE_DIR${NC}"
@@ -908,7 +626,6 @@ if [ "$ENABLE_ARCHIVE" = true ] && [ -d "$ARCHIVE_DIR" ] && [ -n "$(ls -A "$ARCH
     fi
 fi
 
-# Summary
 echo ""
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}COMPLETE!${NC}"
